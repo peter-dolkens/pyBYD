@@ -98,6 +98,7 @@ class BydClient:
         session: aiohttp.ClientSession | None = None,
         on_vehicle_info: Callable[[str, VehicleRealtimeData], None] | None = None,
         on_mqtt_event: Callable[[str, str, dict[str, Any]], None] | None = None,
+        on_command_ack: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._config = config
         self._external_session = session is not None
@@ -111,6 +112,10 @@ class BydClient:
         self._mqtt_reauth_at: float = 0.0
         self._on_vehicle_info = on_vehicle_info
         self._on_mqtt_event_cb = on_mqtt_event
+        self._on_command_ack_cb = on_command_ack
+        # Serials from _trigger_and_poll (data polls like GPS/realtime).
+        # Used to distinguish data-poll MQTT acks from remote-control command acks.
+        self._data_poll_serials: set[str] = set()
 
     # ------------------------------------------------------------------
     # Context manager lifecycle
@@ -344,14 +349,14 @@ class BydClient:
         if serial:
             respond_data.setdefault("requestSerial", serial)
 
-        # Generic callback — fire for every MQTT event
+        # --- 1) Generic callback — fire for every MQTT event (debug / logging) ---
         if self._on_mqtt_event_cb is not None and event.vin:
             try:
                 self._on_mqtt_event_cb(event.event, event.vin, respond_data)
             except Exception:
                 _logger.debug("on_mqtt_event callback failed", exc_info=True)
 
-        # vehicleInfo callback for on_vehicle_info
+        # --- 2) vehicleInfo callback for on_vehicle_info ---
         if event.event == "vehicleInfo" and event.vin and self._on_vehicle_info is not None:
             try:
                 realtime = VehicleRealtimeData.model_validate(respond_data)
@@ -359,7 +364,7 @@ class BydClient:
             except Exception:
                 _logger.debug("Failed to parse MQTT vehicleInfo", exc_info=True)
 
-        # Dispatch to generic MQTT waiters
+        # --- 3) Dispatch to generic MQTT waiters ---
         serial_value = respond_data.get("requestSerial")
         serial = serial_value if isinstance(serial_value, str) and serial_value else None
 
@@ -403,6 +408,22 @@ class BydClient:
         for w in matched:
             if not w.future.done():
                 w.future.set_result(respond_data)
+
+        # --- 4) Command ack callback — only for genuine remote-control acks ---
+        # Fire on_command_ack when this is a remoteControl event whose serial
+        # does NOT belong to an in-flight data poll (GPS, realtime).  This
+        # lets the integration distinguish actual command acks from data-poll
+        # MQTT responses that happen to arrive as "remoteControl" events.
+        if (
+            self._on_command_ack_cb is not None
+            and event.vin
+            and event.event == "remoteControl"
+            and (serial is None or serial not in self._data_poll_serials)
+        ):
+            try:
+                self._on_command_ack_cb(event.event, event.vin, respond_data)
+            except Exception:
+                _logger.debug("on_command_ack callback failed", exc_info=True)
 
     async def _mqtt_wait(
         self,
@@ -500,42 +521,49 @@ class BydClient:
         if not serial:
             return model_cls.model_validate(merged_latest)
 
-        # Phase 2: MQTT wait (preferred)
-        mqtt_raw = await self._mqtt_wait(
-            vin,
-            event_type=mqtt_event_type,
-            serial=serial,
-            timeout=mqtt_timeout,
-        )
-        if isinstance(mqtt_raw, dict) and is_ready(mqtt_raw):
-            _logger.debug("%s data received via MQTT for vin=%s", label, vin)
-            return model_cls.model_validate(mqtt_raw)
+        # Register the serial so _on_mqtt_event can distinguish data-poll
+        # responses from genuine remote-control command acks.
+        trigger_serial: str = serial
+        self._data_poll_serials.add(trigger_serial)
+        try:
+            # Phase 2: MQTT wait (preferred)
+            mqtt_raw = await self._mqtt_wait(
+                vin,
+                event_type=mqtt_event_type,
+                serial=serial,
+                timeout=mqtt_timeout,
+            )
+            if isinstance(mqtt_raw, dict) and is_ready(mqtt_raw):
+                _logger.debug("%s data received via MQTT for vin=%s", label, vin)
+                return model_cls.model_validate(mqtt_raw)
 
-        # Phase 3: HTTP poll fallback
-        _logger.debug("MQTT timeout; falling back to HTTP polling for %s vin=%s", label, vin)
-        for attempt in range(1, poll_attempts + 1):
-            if poll_interval > 0:
-                await asyncio.sleep(poll_interval)
-            try:
-                latest, serial = await fetch_fn(
-                    poll_endpoint,
-                    self._config,
-                    session,
-                    transport,
-                    vin,
-                    serial,
-                )
-                if isinstance(latest, dict):
-                    merged_latest = latest
-                if isinstance(latest, dict) and is_ready(latest):
-                    _logger.debug("%s ready via HTTP vin=%s attempt=%d", label, vin, attempt)
-                    break
-            except BydSessionExpiredError:
-                raise
-            except Exception:
-                _logger.debug("%s poll attempt=%d failed", label, attempt, exc_info=True)
+            # Phase 3: HTTP poll fallback
+            _logger.debug("MQTT timeout; falling back to HTTP polling for %s vin=%s", label, vin)
+            for attempt in range(1, poll_attempts + 1):
+                if poll_interval > 0:
+                    await asyncio.sleep(poll_interval)
+                try:
+                    latest, serial = await fetch_fn(
+                        poll_endpoint,
+                        self._config,
+                        session,
+                        transport,
+                        vin,
+                        serial,
+                    )
+                    if isinstance(latest, dict):
+                        merged_latest = latest
+                    if isinstance(latest, dict) and is_ready(latest):
+                        _logger.debug("%s ready via HTTP vin=%s attempt=%d", label, vin, attempt)
+                        break
+                except BydSessionExpiredError:
+                    raise
+                except Exception:
+                    _logger.debug("%s poll attempt=%d failed", label, attempt, exc_info=True)
 
-        return model_cls.model_validate(merged_latest)
+            return model_cls.model_validate(merged_latest)
+        finally:
+            self._data_poll_serials.discard(trigger_serial)
 
     async def get_vehicles(self) -> list[Vehicle]:
         """Fetch all vehicles associated with the account."""
