@@ -174,6 +174,7 @@ class BydConfig(BaseModel):
         _ENV_CONFIG_MAP = {
             "BYD_USERNAME": "username",
             "BYD_PASSWORD": "password",
+            "BYD_BASE_URL": "base_url",
             "BYD_COUNTRY_CODE": "country_code",
             "BYD_LANGUAGE": "language",
             "BYD_TIME_ZONE": "time_zone",
