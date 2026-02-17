@@ -569,8 +569,8 @@ class TestSeatHeatVentStateToCommandLevel:
     def test_high_maps_to_three(self) -> None:
         assert SeatHeatVentState.HIGH.to_command_level() == 3
 
-    def test_available_maps_to_zero(self) -> None:
-        assert SeatHeatVentState.AVAILABLE.to_command_level() == 0
+    def test_no_data_maps_to_zero(self) -> None:
+        assert SeatHeatVentState.NO_DATA.to_command_level() == 0
 
     def test_unknown_maps_to_zero(self) -> None:
         assert SeatHeatVentState.UNKNOWN.to_command_level() == 0
@@ -587,7 +587,7 @@ class TestSeatClimateParamsFromCurrentState:
             {
                 "statusNow": {
                     "mainSeatHeatState": 3,  # HIGH
-                    "mainSeatVentilationState": 0,  # AVAILABLE
+                    "mainSeatVentilationState": 0,  # NO_DATA
                     "copilotSeatHeatState": 2,  # LOW
                     "stearingWheelHeatState": 1,  # ON
                 }
@@ -595,7 +595,7 @@ class TestSeatClimateParamsFromCurrentState:
         )
         params = SeatClimateParams.from_current_state(hvac=hvac)
         assert params.main_heat == 3  # HIGH → 3
-        assert params.main_ventilation == 0  # AVAILABLE → 0
+        assert params.main_ventilation == 0  # NO_DATA → 0
         assert params.copilot_heat == 2  # LOW → 2
         assert params.steering_wheel_heat == 1
 

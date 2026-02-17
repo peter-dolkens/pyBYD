@@ -56,7 +56,7 @@ class ChargingState(BydEnum):
 
     UNKNOWN = -1
     NOT_CHARGING = 0
-    CHARGING = 1 
+    CHARGING = 1
     CONNECTED = 15  # connected, not charging
 
 
@@ -139,17 +139,22 @@ class SeatHeatVentState(BydEnum):
     """Seat heating / ventilation / steering wheel heat level.
 
     Observed from live API data:
-    - 0 = off
-    - 2 = low
-    - 3 = high
 
-    Value ``1`` appears when the feature is available but inactive
-    (e.g. front seats while driving).
+    - ``0`` = **no data** – the API returns this when the vehicle is
+      off or for stale/placeholder responses.  It does *not*
+      authoritatively indicate that the hardware is absent; only
+      that the current response carries no information for this seat.
+    - ``1`` = feature present but currently **off**
+    - ``2`` = **low**
+    - ``3`` = **high**
+
+    ``UNKNOWN`` (``-1``) is the :class:`BydEnum` fallback for any
+    integer the API sends that has no mapped member.
     """
 
     UNKNOWN = -1
-    UNAVAILABLE = 0  # dont have the feature ??
-    OFF = 1  # we have the feature but it's currently off
+    NO_DATA = 0  # API has no data for this seat right now
+    OFF = 1  # feature exists, currently inactive
     LOW = 2
     HIGH = 3
 
@@ -158,8 +163,8 @@ class SeatHeatVentState(BydEnum):
 
         Status and command share the same integer scale, so this is
         the identity for valid states (``OFF = 1``, ``LOW = 2``,
-        ``HIGH = 3``).  ``UNAVAILABLE`` (0) and ``UNKNOWN`` (−1) both
-        map to ``0`` (not applicable / feature absent).
+        ``HIGH = 3``).  ``NO_DATA`` (0) and ``UNKNOWN`` (−1) both
+        map to ``0`` (no action / data absent).
         """
         return max(0, self.value)
 
