@@ -347,6 +347,8 @@ class VehicleRealtimeData(BydBaseModel):
 
     # --- Energy consumption ---
     total_power: float | None = None
+    gl: float | None = None
+    """Gross load (instantaneous battery power (W))"""
     total_energy: str | None = None
     """Total energy (string, '--' when unavailable)."""
     nearest_energy_consumption: str | None = None
