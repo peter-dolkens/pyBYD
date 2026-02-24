@@ -8,7 +8,7 @@ How to update this file:
 2. Compare the JSON outputs to identify which fields change and what the values mean.
 3. Update the tables below and (if needed) extend the parsers/models.
 
-Last updated: 2026-02-16
+Last updated: 2026-02-24
 
 Base URL: https://dilinkappoversea-eu.byd.auto
 
@@ -90,6 +90,7 @@ Parser: `src/pybyd/_api/realtime.py`
 |---|---|---|---|---|
 | State | `onlineState` | `online_state` | `OnlineState` | 0=unknown (unconfirmed), 1=online (confirmed), 2=offline (unconfirmed) |
 | State | `connectState` | `connect_state` | `ConnectState` | -1=unknown (conflicting: seen while driving and online), 0=disconnected (unconfirmed), 1=connected (unconfirmed) |
+<<<<<<< HEAD
 | State | `vehicleState` | `vehicle_state` | `VehicleState \| int` | 0=on (confirmed), 1=unknown_1 (unconfirmed), 2=off (confirmed) |
 | State | `requestSerial` | `request_serial` | `str \| None` | poll serial token |
 | Battery | `elecPercent` | `elec_percent` | `float \| None` | SOC 0-100 (confirmed) |
@@ -178,6 +179,97 @@ Parser: `src/pybyd/_api/realtime.py`
 | Features | `chargeHeatState` | `charge_heat_state` | `int \| None` | 0=off (confirmed) |
 | Features | `upgradeStatus` | `upgrade_status` | `int \| None` | 0=none (confirmed) |
 | Metadata | `time` | `timestamp` | `int \| None` | epoch seconds (confirmed) |
+=======
+| State | `vehicleState` | `vehicle_state` | `VehicleState | int` | 0=on (confirmed), 1=unknown_1 (unconfirmed), 2=off (confirmed) |
+| State | `requestSerial` | `request_serial` | `str | None` | poll serial token |
+| Battery | `elecPercent` | `elec_percent` | `float | None` | SOC 0-100 (confirmed) |
+| Battery | `powerBattery` | `power_battery` | `float | None` | alternative SOC field (unconfirmed) |
+| Range | `enduranceMileage` | `endurance_mileage` | `float | None` | estimated range in km (confirmed) |
+| Range | `evEndurance` | `ev_endurance` | `float | None` | alternative range field (unconfirmed) |
+| Range | `enduranceMileageV2` | `endurance_mileage_v2` | `float | None` | range v2 (unconfirmed) |
+| Range | `enduranceMileageV2Unit` | `endurance_mileage_v2_unit` | `str | None` | "km" or "--" when unavailable (confirmed) |
+| Odometer | `totalMileage` | `total_mileage` | `float | None` | km (confirmed) |
+| Odometer | `totalMileageV2` | `total_mileage_v2` | `float | None` | km (unconfirmed) |
+| Odometer | `totalMileageV2Unit` | `total_mileage_v2_unit` | `str | None` | "km" (confirmed) |
+| Driving | `speed` | `speed` | `float | None` | km/h (confirmed) |
+| Driving | `powerGear` | `power_gear` | `PowerGear | int | None` | 1=parked (confirmed), 3=drive (confirmed), value `0` observed in stale/unready snapshots |
+| Climate | `tempInCar` | `temp_in_car` | `float | None` | interior temp in C; -129 means unavailable (confirmed) |
+| Climate | `mainSettingTemp` | `main_setting_temp` | `int | None` | cabin set temperature, integer (confirmed) |
+| Climate | `mainSettingTempNew` | `main_setting_temp_new` | `float | None` | cabin set temperature, precise C (unconfirmed) |
+| Climate | `airRunState` | `air_run_state` | `AirCirculationMode | int | None` | 0=external (legacy mapping), 1=internal recirculation (confirmed), 2=outside air / fresh (confirmed) |
+| Seats | `mainSeatHeatState` | `main_seat_heat_state` | `SeatHeatVentState | int | None` | 0=off, 1=inactive (confirmed), 2=low, 3=high (confirmed) |
+| Seats | `mainSeatVentilationState` | `main_seat_ventilation_state` | `SeatHeatVentState | int | None` | 0=off, 2=low, 3=high (confirmed) |
+| Seats | `copilotSeatHeatState` | `copilot_seat_heat_state` | `SeatHeatVentState | int | None` | 0=off, 2=low, 3=high (confirmed) |
+| Seats | `copilotSeatVentilationState` | `copilot_seat_ventilation_state` | `SeatHeatVentState | int | None` | 0=off, 2=low, 3=high (confirmed) |
+| Seats | `steeringWheelHeatState` | `steering_wheel_heat_state` | `SeatHeatVentState | int | None` | 0=off (confirmed), 1 observed (unconfirmed), 2/3 possible depending on vehicle |
+| Seats | `lrSeatHeatState` | `lr_seat_heat_state` | `SeatHeatVentState | int | None` | 0=off (confirmed) |
+| Seats | `lrSeatVentilationState` | `lr_seat_ventilation_state` | `SeatHeatVentState | int | None` | 0=off (confirmed) |
+| Seats | `rrSeatHeatState` | `rr_seat_heat_state` | `SeatHeatVentState | int | None` | 0=off (confirmed) |
+| Seats | `rrSeatVentilationState` | `rr_seat_ventilation_state` | `SeatHeatVentState | int | None` | 0=off (confirmed) |
+| Charging | `chargingState` | `charging_state` | `ChargingState | int` | -1=disconnected (confirmed), 0=not charging (confirmed), 15=gun plugged in not charging (confirmed) |
+| Charging | `chargeState` | `charge_state` | `ChargingState | int | None` | -1=disconnected (confirmed), 1=charging (confirmed), 15=gun plugged in not charging (confirmed) |
+| Charging | `waitStatus` | `wait_status` | `int | None` | charge wait status (unconfirmed) |
+| Charging | `fullHour` | `full_hour` | `int | None` | hours to full; -1 means not available (confirmed) |
+| Charging | `fullMinute` | `full_minute` | `int | None` | minutes to full; -1 means not available (confirmed) |
+| Charging | `remainingHours` | `remaining_hours` | `int | None` | remaining hours; -1 means not available (confirmed) |
+| Charging | `remainingMinutes` | `remaining_minutes` | `int | None` | remaining minutes; -1 means not available (confirmed) |
+| Charging | `bookingChargeState` | `booking_charge_state` | `int | None` | scheduled charging state; 0=off (confirmed) |
+| Charging | `bookingChargingHour` | `booking_charging_hour` | `int | None` | scheduled charge start hour (unconfirmed) |
+| Charging | `bookingChargingMinute` | `booking_charging_minute` | `int | None` | scheduled charge start minute (unconfirmed) |
+| Doors | `leftFrontDoor` | `left_front_door` | `DoorOpenState | None` | 0=closed (confirmed), 1=open (unconfirmed) |
+| Doors | `rightFrontDoor` | `right_front_door` | `DoorOpenState | None` | 0=closed (confirmed), 1=open (unconfirmed) |
+| Doors | `leftRearDoor` | `left_rear_door` | `DoorOpenState | None` | 0=closed (confirmed), 1=open (unconfirmed) |
+| Doors | `rightRearDoor` | `right_rear_door` | `DoorOpenState | None` | 0=closed (confirmed), 1=open (unconfirmed) |
+| Doors | `trunkLid` / `backCover` | `trunk_lid` | `DoorOpenState | None` | uses `trunkLid` first, falls back to `backCover`; 0=closed (confirmed), 1=open (unconfirmed) |
+| Doors | `slidingDoor` | `sliding_door` | `DoorOpenState | None` | 0=closed (confirmed), 1=open (unconfirmed) |
+| Doors | `forehold` | `forehold` | `DoorOpenState | None` | frunk; 0=closed (confirmed), 1=open (unconfirmed) |
+| Locks | `leftFrontDoorLock` | `left_front_door_lock` | `LockState | int | None` | 2=locked (confirmed), 1=unlocked (confirmed), value `0` seen in stale/unready snapshots |
+| Locks | `rightFrontDoorLock` | `right_front_door_lock` | `LockState | int | None` | 2=locked (confirmed), 1=unlocked (confirmed), value `0` seen in stale/unready snapshots |
+| Locks | `leftRearDoorLock` | `left_rear_door_lock` | `LockState | int | None` | 2=locked (confirmed), 1=unlocked (confirmed), value `0` seen in stale/unready snapshots |
+| Locks | `rightRearDoorLock` | `right_rear_door_lock` | `LockState | int | None` | 2=locked (confirmed), 1=unlocked (confirmed), value `0` seen in stale/unready snapshots |
+| Locks | `slidingDoorLock` | `sliding_door_lock` | `LockState | int | None` | 2=locked (confirmed), 1=unlocked (confirmed), value `0` seen in stale/unready snapshots |
+| Windows | `leftFrontWindow` | `left_front_window` | `WindowState | int | None` | 1=closed (confirmed), 2=open (unconfirmed), value `0` seen in stale/unready snapshots |
+| Windows | `rightFrontWindow` | `right_front_window` | `WindowState | int | None` | 1=closed (confirmed), 2=open (unconfirmed), value `0` seen in stale/unready snapshots |
+| Windows | `leftRearWindow` | `left_rear_window` | `WindowState | int | None` | 1=closed (confirmed), 2=open (unconfirmed), value `0` seen in stale/unready snapshots |
+| Windows | `rightRearWindow` | `right_rear_window` | `WindowState | int | None` | 1=closed (confirmed), 2=open (unconfirmed), value `0` seen in stale/unready snapshots |
+| Windows | `skylight` | `skylight` | `WindowState | int | None` | 1=closed (confirmed), 2=open (unconfirmed), value `0` seen in stale/unready snapshots |
+| Tires | `leftFrontTirepressure` | `left_front_tire_pressure` | `float | None` | pressure value in unit given by `tirePressUnit` (confirmed) |
+| Tires | `rightFrontTirepressure` | `right_front_tire_pressure` | `float | None` | pressure value in unit given by `tirePressUnit` (confirmed) |
+| Tires | `leftRearTirepressure` | `left_rear_tire_pressure` | `float | None` | pressure value in unit given by `tirePressUnit` (confirmed) |
+| Tires | `rightRearTirepressure` | `right_rear_tire_pressure` | `float | None` | pressure value in unit given by `tirePressUnit` (confirmed) |
+| Tires | `leftFrontTireStatus` | `left_front_tire_status` | `int | None` | 0=normal (confirmed) |
+| Tires | `rightFrontTireStatus` | `right_front_tire_status` | `int | None` | 0=normal (confirmed) |
+| Tires | `leftRearTireStatus` | `left_rear_tire_status` | `int | None` | 0=normal (confirmed) |
+| Tires | `rightRearTireStatus` | `right_rear_tire_status` | `int | None` | 0=normal (confirmed) |
+| Tires | `tirePressUnit` | `tire_press_unit` | `TirePressureUnit | None` | 1=bar (confirmed), 2=psi (unconfirmed), 3=kPa (unconfirmed; seen in stale/unready snapshot) |
+| Tires | `tirepressureSystem` | `tirepressure_system` | `int | None` | TPMS system state (unconfirmed) |
+| Tires | `rapidTireLeak` | `rapid_tire_leak` | `int | None` | 0=no leak (confirmed) |
+| Energy | `totalPower` | `total_power` | `float | None` | total power (unconfirmed) |
+| Energy | `gl` | `gl` | `float | None` | instantaneous battery power flow in W; positive=charging, negative=discharging (confirmed) |
+| Energy | `totalEnergy` | `total_energy` | `str | None` | string; "--" when unavailable (confirmed) |
+| Energy | `nearestEnergyConsumption` | `nearest_energy_consumption` | `str | None` | string; "--" when unavailable (confirmed) |
+| Energy | `nearestEnergyConsumptionUnit` | `nearest_energy_consumption_unit` | `str | None` | unit string (unconfirmed) |
+| Energy | `recent50kmEnergy` | `recent_50km_energy` | `str | None` | string; "--" when unavailable (confirmed) |
+| Fuel | `oilEndurance` | `oil_endurance` | `float | None` | on EV captures: `0` appears in stale/not-ready snapshots (`onlineState=0`, `time=0`), `-1` appears once realtime is ready (likely N/A) |
+| Fuel | `oilPercent` | `oil_percent` | `float | None` | on EV captures: `0` appears in stale/not-ready snapshots (`onlineState=0`, `time=0`), `-1` appears once realtime is ready (likely N/A) |
+| Fuel | `totalOil` | `total_oil` | `float | None` | 0 for EV (confirmed) |
+| Warnings | `powerSystem` | `power_system` | `int | None` | 0=normal (confirmed) |
+| Warnings | `engineStatus` | `engine_status` | `int | None` | 0=off (confirmed) |
+| Warnings | `epb` | `epb` | `int | None` | 0=released (confirmed) |
+| Warnings | `eps` | `eps` | `int | None` | 0=normal (confirmed) |
+| Warnings | `esp` | `esp` | `int | None` | 0=normal (confirmed) |
+| Warnings | `abs` | `abs_warning` | `int | None` | 0=normal (confirmed) |
+| Warnings | `svs` | `svs` | `int | None` | 0=normal (confirmed) |
+| Warnings | `srs` | `srs` | `int | None` | 0=normal (confirmed) |
+| Warnings | `ect` | `ect` | `int | None` | 0=normal (confirmed) |
+| Warnings | `ectValue` | `ect_value` | `int | None` | -1 means not available (confirmed) |
+| Warnings | `pwr` | `pwr` | `int | None` | 2 observed (unconfirmed) |
+| Features | `sentryStatus` | `sentry_status` | `int | None` | 0=off (unconfirmed), 1=on (unconfirmed), 2 observed (unconfirmed) |
+| Features | `batteryHeatState` | `battery_heat_state` | `int | None` | 0=off (confirmed) |
+| Features | `chargeHeatState` | `charge_heat_state` | `int | None` | 0=off (confirmed) |
+| Features | `upgradeStatus` | `upgrade_status` | `int | None` | 0=none (confirmed) |
+| Metadata | `time` | `timestamp` | `int | None` | epoch seconds (confirmed) |
+>>>>>>> 633a77b (downstream fixes)
 
 ### Unparsed fields (raw only)
 
@@ -190,7 +282,11 @@ They are accessible via the `raw` dict.
 | Seats | `lrThirdVentilationState` | `0` | third-row left seat ventilation (unconfirmed) |
 | Seats | `rrThirdHeatState` | `0` | third-row right seat heat (unconfirmed) |
 | Seats | `rrThirdVentilationState` | `0` | third-row right seat ventilation (unconfirmed) |
+<<<<<<< HEAD
 | Charging | `rate` | `-999`, `-9`, `0` | charging current in ampere (unconfirmed), -999 if not charging (unconfirmed) |
+=======
+| Charging | `rate` | `-999`, `-9`, `0` | possibly `gl / 1000` in kW with inverted sign; sentinel values suggest unreliable when data not ready (unconfirmed) |
+>>>>>>> 633a77b (downstream fixes)
 | Charging | `lessOneMin` | `false` | possibly time-to-full flag (unconfirmed) |
 | Energy | `energyConsumption` | `"15.0"` | unknown consumption field, different from `nearestEnergyConsumption` (unconfirmed) |
 | Energy | `totalConsumption` | `"16.6度/百公里"` | Chinese-locale total consumption label (confirmed) |
@@ -203,7 +299,10 @@ They are accessible via the `raw` dict.
 | Features | `repairModeSwitch` | `"0"` | repair/service mode flag (unconfirmed) |
 | Metadata | `vehicleTimeZone` | `"Europe/Rome"` | vehicle configured timezone (unconfirmed) |
 | Other | `powerBatteryConnection` | `-1`, `0` | battery connectivity indicator (unconfirmed) |
+<<<<<<< HEAD
 | Other | `gl` | `-29.8`, `9788.8`, `0` | battery power in watts (unconfirmed), positive for charging, negative for discharing |
+=======
+>>>>>>> 633a77b (downstream fixes)
 | Other | `ins` | `-1` | unknown (unconfirmed) |
 
 ---
@@ -532,7 +631,7 @@ These reflect the enums currently implemented in `src/pybyd/models/realtime.py`.
 | `VehicleState` | 2 | `UNKNOWN_2` | confirmed | observed in realtime payloads |
 | `ChargingState` | -1 | `DISCONNECTED` | confirmed | |
 | `ChargingState` | 0 | `NOT_CHARGING` | confirmed | |
-| `ChargingState` | 15 | `GUN_CONNECTED` | confirmed | gun plugged in, charging not active |
+| `ChargingState` | 15 | `CONNECTED` | confirmed | gun plugged in, charging not active |
 | `ChargingState` | 1 | `CHARGING` | confirmed | charging; observed on `chargeState` |
 | `PowerGear` | 0 | `UNKNOWN` | confirmed | observed in stale/unready snapshot |
 | `PowerGear` | 1 | `PARKED` | confirmed | |

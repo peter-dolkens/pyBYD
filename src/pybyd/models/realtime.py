@@ -57,7 +57,7 @@ class ChargingState(BydEnum):
     UNKNOWN = -1
     NOT_CHARGING = 0
     CHARGING = 1
-    CONNECTED = 15  # connected, not charging
+    CONNECTED = 15  # charging gun connected, not actively charging
 
 
 class TirePressureUnit(BydEnum):
@@ -442,10 +442,10 @@ class VehicleRealtimeData(BydBaseModel):
         """Whether the vehicle is currently charging.
 
         Returns ``True`` when ``charging_state`` is positive and **not**
-        equal to ``GUN_CONNECTED`` (15), which indicates the plug is
+        equal to ``CONNECTED`` (15), which indicates the plug is
         inserted but charging is not active.
         """
-        return self.charging_state > 0 and self.charging_state != ChargingState.GUN_CONNECTED
+        return self.charging_state > 0 and self.charging_state != ChargingState.CONNECTED
 
     @property
     def time_to_full_minutes(self) -> int | None:

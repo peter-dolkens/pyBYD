@@ -26,7 +26,7 @@ __all__ = [
 
 
 class AcSwitch(BydEnum):
-    """AcSwitch on/off state. """
+    """AcSwitch on/off state."""
 
     # we currently do not know what this is. its not related to the if its on/off it seems, see HvacOverallStatus.
     UNKNOWN = -1

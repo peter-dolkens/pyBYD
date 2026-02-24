@@ -149,7 +149,7 @@ class TestVehicleRealtimeData:
         assert data.air_run_state == AirCirculationMode.INTERNAL
         assert data.main_seat_heat_state == SeatHeatVentState.HIGH
         assert data.charging_state == ChargingState.UNKNOWN
-        assert data.charge_state == ChargingState.GUN_CONNECTED
+        assert data.charge_state == ChargingState.CONNECTED
 
     def test_door_lock_window_enums(self) -> None:
         data = VehicleRealtimeData.model_validate(self.SAMPLE_PAYLOAD)
@@ -210,6 +210,14 @@ class TestVehicleRealtimeData:
     def test_recent_50km_energy_alias(self) -> None:
         data = VehicleRealtimeData.model_validate({"recent50kmEnergy": "15.2"})
         assert data.recent_50km_energy == "15.2"
+
+    def test_gl_battery_power_parsed(self) -> None:
+        data = VehicleRealtimeData.model_validate({"gl": "-2277.0", "time": 0})
+        assert data.gl == pytest.approx(-2277.0)
+
+    def test_gl_none_when_missing(self) -> None:
+        data = VehicleRealtimeData.model_validate({})
+        assert data.gl is None
 
 
 # ------------------------------------------------------------------

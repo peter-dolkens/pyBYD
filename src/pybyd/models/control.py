@@ -60,8 +60,8 @@ class ControlState(enum.IntEnum):
 class RemoteControlResult(BydBaseModel):
     """Result of a remote control command."""
 
-    control_state: ControlState = Field(validation_alias="controlState")
-    success: bool
+    control_state: ControlState = Field(default=ControlState.PENDING, validation_alias="controlState")
+    success: bool = False
     request_serial: str | None = Field(default=None, validation_alias="requestSerial")
 
     @model_validator(mode="before")

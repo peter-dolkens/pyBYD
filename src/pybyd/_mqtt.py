@@ -230,7 +230,7 @@ class BydMqttRuntime:
             except BydCryptoError:
                 snippet = msg.payload[:64].hex() if msg.payload else "<empty>"
                 self._logger.debug(
-                    "MQTT decrypt failed (%d bytes, head=%s) — likely stale key, " "requesting re-auth",
+                    "MQTT decrypt failed (%d bytes, head=%s) — likely stale key, requesting re-auth",
                     len(msg.payload),
                     snippet,
                 )

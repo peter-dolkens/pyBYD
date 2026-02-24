@@ -42,7 +42,6 @@ if _src.is_dir():
 
 from pybyd import BydClient, BydConfig  # noqa: E402
 
-
 # ── Inline helpers (formerly pybyd._tools.field_mapper) ──────
 
 
@@ -125,6 +124,7 @@ def diff_flatmaps(
         if old != new:
             changes[key] = (before.get(key), after.get(key))
     return changes
+
 
 LOG = logging.getLogger("data_diff")
 
