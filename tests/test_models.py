@@ -267,7 +267,7 @@ class TestVehicleRealtimeData:
         assert data.gl is None
 
     @pytest.mark.parametrize(
-        ("charging_state", "expected"),
+        ("charge_state", "expected"),
         [
             (ChargingState.CHARGING, True),
             (ChargingState.CONNECTED, False),
@@ -275,13 +275,39 @@ class TestVehicleRealtimeData:
             (ChargingState.UNKNOWN, False),
         ],
     )
-    def test_is_charging_strict_charging_state(
+    def test_is_charging_from_charge_state(
         self,
-        charging_state: ChargingState,
+        charge_state: ChargingState,
         expected: bool,
     ) -> None:
-        data = VehicleRealtimeData.model_validate({"chargingState": int(charging_state)})
+        data = VehicleRealtimeData.model_validate({"chargeState": int(charge_state)})
         assert data.is_charging is expected
+
+    @pytest.mark.parametrize(
+        ("charge_state", "expected"),
+        [
+            (ChargingState.CHARGING, True),
+            (ChargingState.CONNECTED, True),
+            (ChargingState.NOT_CHARGING, False),
+            (ChargingState.UNKNOWN, False),
+        ],
+    )
+    def test_is_charger_connected_from_charge_state(
+        self,
+        charge_state: ChargingState,
+        expected: bool,
+    ) -> None:
+        data = VehicleRealtimeData.model_validate({"chargeState": int(charge_state)})
+        assert data.is_charger_connected is expected
+
+    def test_effective_charging_state_uses_charge_state_only(self) -> None:
+        data = VehicleRealtimeData.model_validate(
+            {
+                "chargingState": int(ChargingState.CHARGING),
+                "chargeState": int(ChargingState.CONNECTED),
+            }
+        )
+        assert data.effective_charging_state == ChargingState.CONNECTED
 
 
 # ------------------------------------------------------------------

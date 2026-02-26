@@ -310,9 +310,19 @@ class VehicleRealtimeData(BydBaseModel):
 
     # --- Charging ---
     charging_state: ChargingState = ChargingState.UNKNOWN
-    """Primary realtime charging state (-1=unknown, 0=not charging, 1=charging, 15=plug connected)."""
+    """Legacy charging field from realtime payload.
+
+    Observed API behavior indicates this field may remain ``UNKNOWN`` (``-1``)
+    while ``charge_state`` carries authoritative charging status.
+    """
     charge_state: ChargingState | None = None
-    """Secondary charging-related state from realtime payload (diagnostic, not used for ``is_charging``)."""
+    """Authoritative realtime charging state.
+
+    Observed values:
+    - ``0`` = not charging
+    - ``1`` = charging
+    - ``15`` = charging gun connected, not actively charging
+    """
     wait_status: int | None = None
     """Charge wait status."""
     full_hour: int | None = None
@@ -467,13 +477,31 @@ class VehicleRealtimeData(BydBaseModel):
         return self.online_state == OnlineState.ONLINE
 
     @property
+    def effective_charging_state(self) -> ChargingState:
+        """Canonical charging state derived from realtime payload.
+
+        ``charge_state`` is treated as the authoritative source.
+        """
+        if self.charge_state is None:
+            return ChargingState.UNKNOWN
+        return self.charge_state
+
+    @property
     def is_charging(self) -> bool:
         """Whether the vehicle is currently charging.
 
-        Returns ``True`` only when ``charging_state`` is
+        Returns ``True`` only when canonical charging state is
         :class:`ChargingState.CHARGING`.
         """
-        return self.charging_state == ChargingState.CHARGING
+        return self.effective_charging_state == ChargingState.CHARGING
+
+    @property
+    def is_charger_connected(self) -> bool:
+        """Whether the charging gun is physically connected."""
+        return self.effective_charging_state in (
+            ChargingState.CHARGING,
+            ChargingState.CONNECTED,
+        )
 
     @property
     def time_to_full_minutes(self) -> int | None:
