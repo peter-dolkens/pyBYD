@@ -90,9 +90,11 @@ class LockState(BydEnum):
 
     BYD SDK ``getDoorLockState()`` (section 6.10.2).
     Cloud API uses 1=unlocked, 2=locked (confirmed).
+    Value 0 is returned by the API when state is unavailable.
     """
 
     UNKNOWN = -1
+    UNAVAILABLE = 0  # BYD API returns 0 when state is unavailable
     UNLOCKED = 1  # confirmed
     LOCKED = 2  # confirmed
 
@@ -125,14 +127,24 @@ class PowerGear(BydEnum):
 class StearingWheelHeat(BydEnum):
     """Stearing wheel heating level.
 
-    Observed from live API data:
-    - 0 = off
-    - 1 = on
+    Observed from live API data (status readings):
+    - -1 = on  (counter-intuitive but confirmed)
+    -  1 = off
 
+    Command values (for ``controlParamsMap``) use a different scale:
+    - 1 = on
+    - 3 = off
     """
 
     ON = -1  # makes no sense, but tested live.
     OFF = 1
+
+    def to_command_level(self) -> int:
+        """Return the value to send in a seat-climate command.
+
+        Command scale: ``1`` = on, ``3`` = off.
+        """
+        return 1 if self == StearingWheelHeat.ON else 3
 
 
 class SeatHeatVentState(BydEnum):
@@ -161,12 +173,29 @@ class SeatHeatVentState(BydEnum):
     def to_command_level(self) -> int:
         """Return the value to send in a ``set_seat_climate()`` command.
 
-        Status and command share the same integer scale, so this is
-        the identity for valid states (``OFF = 1``, ``LOW = 2``,
-        ``HIGH = 3``).  ``NO_DATA`` (0) and ``UNKNOWN`` (−1) both
-        map to ``0`` (no action / data absent).
+        The BYD API uses an **inverted** scale for commands compared to
+        status readings::
+
+            Status  →  Command
+            HIGH=3  →  1 (most powerful)
+            LOW=2   →  2 (least powerful)
+            OFF=1   →  3 (off)
+
+        ``NO_DATA`` (0) and ``UNKNOWN`` (−1) both map to ``0``
+        (no action / feature absent).
         """
-        return max(0, self.value)
+        return _SEAT_STATUS_TO_COMMAND.get(self.value, 0)
+
+
+# Command scale (for controlParamsMap) is *inverted* compared to
+# the status scale: 1 = high, 2 = low, 3 = off.
+_SEAT_STATUS_TO_COMMAND: dict[int, int] = {
+    -1: 0,  # UNKNOWN  → no action
+    0: 0,  # NO_DATA  → no action
+    1: 3,  # OFF      → 3 (off)
+    2: 2,  # LOW      → 2 (low)
+    3: 1,  # HIGH     → 1 (high)
+}
 
 
 class AirCirculationMode(BydEnum):
@@ -281,9 +310,9 @@ class VehicleRealtimeData(BydBaseModel):
 
     # --- Charging ---
     charging_state: ChargingState = ChargingState.UNKNOWN
-    """Charging state (-1=unknown, 0=not charging, 15=gun connected)."""
+    """Primary realtime charging state (-1=unknown, 0=not charging, 1=charging, 15=plug connected)."""
     charge_state: ChargingState | None = None
-    """Charge gun state (-1=unknown, 15=connected, not charging)."""
+    """Secondary charging-related state from realtime payload (diagnostic, not used for ``is_charging``)."""
     wait_status: int | None = None
     """Charge wait status."""
     full_hour: int | None = None
@@ -441,11 +470,10 @@ class VehicleRealtimeData(BydBaseModel):
     def is_charging(self) -> bool:
         """Whether the vehicle is currently charging.
 
-        Returns ``True`` when ``charging_state`` is positive and **not**
-        equal to ``CONNECTED`` (15), which indicates the plug is
-        inserted but charging is not active.
+        Returns ``True`` only when ``charging_state`` is
+        :class:`ChargingState.CHARGING`.
         """
-        return self.charging_state > 0 and self.charging_state != ChargingState.CONNECTED
+        return self.charging_state == ChargingState.CHARGING
 
     @property
     def time_to_full_minutes(self) -> int | None:
@@ -468,16 +496,23 @@ class VehicleRealtimeData(BydBaseModel):
         return self.temp_in_car is not None
 
     @property
-    def is_locked(self) -> bool:
-        """Whether all doors are locked (True if all known locks == LOCKED)."""
+    def is_locked(self) -> bool | None:
+        """Whether all doors are locked (True if all known locks == LOCKED).
+
+        Returns ``None`` when all lock fields are absent, UNKNOWN, or UNAVAILABLE
+        (i.e. no authoritative state is available).
+        """
         locks = [
             self.left_front_door_lock,
             self.right_front_door_lock,
             self.left_rear_door_lock,
             self.right_rear_door_lock,
         ]
-        known = [lk for lk in locks if lk is not None]
-        return len(known) > 0 and all(lk == LockState.LOCKED for lk in known)
+        _SKIP = {None, LockState.UNKNOWN, LockState.UNAVAILABLE}
+        known = [lk for lk in locks if lk not in _SKIP]
+        if not known:
+            return None
+        return all(lk == LockState.LOCKED for lk in known)
 
     @property
     def is_any_door_open(self) -> bool:

@@ -124,16 +124,20 @@ def _is_remote_control_ready(data: dict[str, Any]) -> bool:
     """Check if remote control result has a terminal state.
 
     Returns ``True`` when ``controlState`` is defined and not 0
-    (pending), when a ``res`` field is present (immediate result),
+    (pending), when a terminal ``res`` value (≥ 2) is present,
     or when a ``result`` field is present.
+
+    ``res=1`` means "command received / in progress" and is **not**
+    terminal — the caller should keep polling.
     """
     if not data:
         return False
     control_state = data.get("controlState")
     if control_state is not None and int(control_state) != 0:
         return True
-    if "res" in data:
-        return True
+    res = data.get("res")
+    if res is not None:
+        return int(res) >= 2
     return "result" in data
 
 

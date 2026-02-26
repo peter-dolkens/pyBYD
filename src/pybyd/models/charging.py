@@ -45,7 +45,7 @@ class ChargingStatus(BydBaseModel):
 
     @property
     def is_charging(self) -> bool:
-        return self.charging_state is not None and self.charging_state != 15 and self.charging_state > 0
+        return self.charging_state == 1
 
     @property
     def time_to_full_available(self) -> bool:

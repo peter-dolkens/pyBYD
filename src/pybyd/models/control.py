@@ -72,10 +72,18 @@ class RemoteControlResult(BydBaseModel):
 
         merged = dict(values)
 
-        # Immediate result format: {"res": 2, ...}
+        # BYD ``res`` field (from /remoteControlResult and MQTT acks):
+        #   1 = command received / in progress (keep polling)
+        #   2 = success (terminal)
+        #   other = failure (terminal)
         if "res" in merged and "controlState" not in merged and "control_state" not in merged:
             res_val = int(merged["res"])
-            state = ControlState.SUCCESS if res_val == 2 else ControlState.FAILURE
+            if res_val == 1:
+                state = ControlState.PENDING
+            elif res_val == 2:
+                state = ControlState.SUCCESS
+            else:
+                state = ControlState.FAILURE
             merged["controlState"] = int(state)
             merged.setdefault("success", state == ControlState.SUCCESS)
 
@@ -155,30 +163,33 @@ class ControlParams(BaseModel):
 
 
 class ClimateStartParams(ControlParams):
-    """Parameters for starting HVAC (commandType ``OPENAIR``).
+    """Parameters for starting HVAC immediately (commandType ``OPENAIR``).
 
     Temperatures are specified in °C (15-31) and automatically converted
     to BYD's internal scale (1-17) on serialisation.
+
+    Sensible defaults are provided for all API-required fields so that
+    callers only need to supply ``temperature`` and ``time_span``.
     """
 
     temperature: float | None = Field(default=None, ge=15.0, le=31.0)
     """Driver temperature setpoint in °C (15-31)."""
 
     copilot_temperature: float | None = Field(default=None, ge=15.0, le=31.0)
-    """Passenger temperature setpoint in °C (15-31)."""
+    """Passenger temperature setpoint in °C (15-31).  Defaults to *temperature*."""
 
-    cycle_mode: int | None = Field(default=None, ge=0)
-    """Air recirculation/cycle mode code."""
+    cycle_mode: int = Field(default=2, ge=0)
+    """Air recirculation: 1=external (fresh), 2=internal (recirculate)."""
 
     time_span: int | None = Field(default=None, ge=1, le=5)
     """Run duration code (1=10min, 2=15min, 3=20min, 4=25min, 5=30min)."""
 
-    ac_switch: int | None = Field(default=None, ge=0, le=1)
-    air_accuracy: int | None = Field(default=None, ge=0)
-    air_conditioning_mode: int | None = Field(default=None, ge=0)
-    remote_mode: int | None = Field(default=None, ge=0)
+    remote_mode: int = Field(default=4, ge=0)
+    """Command mode: 4=immediate start."""
+
+    air_accuracy: int = Field(default=1, ge=0)
+    air_conditioning_mode: int = Field(default=1, ge=0)
     wind_level: int | None = Field(default=None, ge=0)
-    wind_position: int | None = Field(default=None, ge=0)
 
     @field_serializer("temperature", "copilot_temperature")
     def _serialize_temp(self, value: float | None) -> int | None:
@@ -192,49 +203,106 @@ class ClimateStartParams(ControlParams):
             data["mainSettingTemp"] = data.pop("temperature")
         if "copilotTemperature" in data:
             data["copilotSettingTemp"] = data.pop("copilotTemperature")
+        # Mirror driver temp to copilot when copilot was not explicitly set.
+        if "copilotSettingTemp" not in data and "mainSettingTemp" in data:
+            data["copilotSettingTemp"] = data["mainSettingTemp"]
+        # Immediate mode requires airSet: null in the payload.
+        if self.remote_mode == 4:
+            data["airSet"] = None
         return data
 
 
 class ClimateScheduleParams(ClimateStartParams):
-    """Parameters for scheduling HVAC (commandType ``BOOKINGAIR``)."""
+    """Parameters for scheduling HVAC (commandType ``BOOKINGAIR``).
 
-    booking_id: int = Field(..., ge=1)
-    """Schedule booking ID."""
+    ``remote_mode`` should be:
+    - ``1`` = create new schedule
+    - ``2`` = modify existing schedule (requires ``booking_id``)
+    - ``3`` = remove schedule (requires ``booking_id``)
+    """
 
-    booking_time: int = Field(..., ge=1)
+    remote_mode: int = Field(default=1, ge=1, le=3)
+    """Schedule mode: 1=create, 2=modify, 3=remove."""
+
+    booking_id: int | None = Field(default=None, ge=1)
+    """Schedule booking ID (required for modify/remove)."""
+
+    booking_time: int | None = Field(default=None, ge=1)
     """Schedule time as epoch seconds."""
+
+    ac_switch: int = Field(default=0, ge=0, le=1)
+    """A/C switch (0=off, 1=on).  Usually 0 for schedule creation."""
+
+    wind_mode: int | None = Field(default=None, ge=0)
+    """Fan mode (only included on create)."""
 
 
 class SeatClimateParams(ControlParams):
     """Parameters for seat heating/ventilation (commandType ``VENTILATIONHEATING``).
 
-    Values use the same scale as the status enums:
-    - 0 = not applicable (feature absent)
-    - 1 = off
-    - 2 = low
-    - 3 = high
+    Command values use an **inverted** scale compared to status readings::
+
+        1 = high (most powerful)
+        2 = low  (least powerful)
+        3 = off
+
+    A value of ``0`` means "not applicable / feature absent".
+
+    The ``chair_type`` field indicates which seat/feature the command
+    targets:  ``"1"`` = driver, ``"2"`` = copilot, ``"5"`` = steering
+    wheel.  ``remote_mode`` is always ``1`` for seat/steering commands.
     """
 
-    main_heat: int | None = Field(default=None, ge=0, le=3)
-    main_ventilation: int | None = Field(default=None, ge=0, le=3)
-    copilot_heat: int | None = Field(default=None, ge=0, le=3)
-    copilot_ventilation: int | None = Field(default=None, ge=0, le=3)
-    lr_seat_heat: int | None = Field(default=None, ge=0, le=3)
-    lr_seat_ventilation: int | None = Field(default=None, ge=0, le=3)
-    rr_seat_heat: int | None = Field(default=None, ge=0, le=3)
-    rr_seat_ventilation: int | None = Field(default=None, ge=0, le=3)
-    steering_wheel_heat: int | None = Field(default=None, ge=0, le=1)
+    # --- Target identification ---
+    chair_type: str | None = Field(default=None)
+    """Which seat the command targets: "1"=driver, "2"=copilot, "5"=steering wheel."""
 
-    # Mapping from model attribute names → constructor keyword arguments.
+    remote_mode: int = Field(default=1, ge=1, le=4)
+    """Always ``1`` for seat/steering wheel commands."""
+
+    # --- Driver ---
+    main_heat: int = Field(default=3, ge=0, le=3)
+    main_ventilation: int = Field(default=0, ge=0, le=3)
+
+    # --- Copilot ---
+    copilot_heat: int = Field(default=3, ge=0, le=3)
+    copilot_ventilation: int = Field(default=0, ge=0, le=3)
+
+    # --- Rear left ---
+    lr_seat_heat_state: int = Field(default=0, ge=0, le=3)
+    lr_seat_ventilation_state: int = Field(default=0, ge=0, le=3)
+    lr_third_heat_state: int = Field(default=0, ge=0, le=3)
+    lr_third_ventilation_state: int = Field(default=0, ge=0, le=3)
+
+    # --- Rear right ---
+    rr_seat_heat_state: int = Field(default=0, ge=0, le=3)
+    rr_seat_ventilation_state: int = Field(default=0, ge=0, le=3)
+    rr_third_heat_state: int = Field(default=0, ge=0, le=3)
+    rr_third_ventilation_state: int = Field(default=0, ge=0, le=3)
+
+    # --- Steering wheel ---
+    steering_wheel_heat_state: int = Field(default=3, ge=0, le=3)
+    """Steering wheel heat: 1=on, 3=off."""
+
+    # chairType → which seat changed.
+    _CHAIR_TYPE_FOR_PARAM: ClassVar[dict[str, str]] = {
+        "main_heat": "1",
+        "main_ventilation": "1",
+        "copilot_heat": "2",
+        "copilot_ventilation": "2",
+        "steering_wheel_heat_state": "5",
+    }
+
+    # Mapping from HVAC/realtime status attr → constructor keyword.
     _SEAT_ATTR_TO_PARAM: ClassVar[dict[str, str]] = {
         "main_seat_heat_state": "main_heat",
         "main_seat_ventilation_state": "main_ventilation",
         "copilot_seat_heat_state": "copilot_heat",
         "copilot_seat_ventilation_state": "copilot_ventilation",
-        "lr_seat_heat_state": "lr_seat_heat",
-        "lr_seat_ventilation_state": "lr_seat_ventilation",
-        "rr_seat_heat_state": "rr_seat_heat",
-        "rr_seat_ventilation_state": "rr_seat_ventilation",
+        "lr_seat_heat_state": "lr_seat_heat_state",
+        "lr_seat_ventilation_state": "lr_seat_ventilation_state",
+        "rr_seat_heat_state": "rr_seat_heat_state",
+        "rr_seat_ventilation_state": "rr_seat_ventilation_state",
     }
 
     @classmethod
@@ -248,14 +316,14 @@ class SeatClimateParams(ControlParams):
         The BYD API requires *all* seat climate values to be sent with
         every command.  This factory reads the current state from the
         HVAC status (preferred) with realtime data as fallback, and
-        converts each ``SeatHeatVentState`` to the command scale via
-        :pymeth:`SeatHeatVentState.to_command_level`.
+        converts each :class:`SeatHeatVentState` to the command scale
+        (inverted: HIGH→1, LOW→2, OFF→3).
 
-        Steering wheel heat is included (``1`` = on, ``0`` = off).
+        Steering wheel heat uses ``1`` = on, ``3`` = off.
         """
         from pybyd.models.realtime import SeatHeatVentState, StearingWheelHeat
 
-        kwargs: dict[str, int] = {}
+        kwargs: dict[str, Any] = {}
 
         for attr, param in cls._SEAT_ATTR_TO_PARAM.items():
             val = None
@@ -274,9 +342,21 @@ class SeatClimateParams(ControlParams):
             sw_val = getattr(hvac, "steering_wheel_heat_state", None)
         if sw_val is None and realtime is not None:
             sw_val = getattr(realtime, "steering_wheel_heat_state", None)
-        kwargs["steering_wheel_heat"] = 1 if sw_val == StearingWheelHeat.ON else 0
+        if isinstance(sw_val, StearingWheelHeat):
+            kwargs["steering_wheel_heat_state"] = sw_val.to_command_level()
+        else:
+            kwargs["steering_wheel_heat_state"] = 3  # default off
 
         return cls(**kwargs)
+
+    def with_change(self, param_key: str, value: int) -> SeatClimateParams:
+        """Return a copy with *param_key* changed and ``chair_type`` set.
+
+        Automatically determines the correct ``chairType`` from the
+        parameter being changed.
+        """
+        chair = self._CHAIR_TYPE_FOR_PARAM.get(param_key)
+        return self.model_copy(update={param_key: value, "chair_type": chair})
 
 
 class BatteryHeatParams(ControlParams):

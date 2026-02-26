@@ -179,7 +179,7 @@ class FakeBydBackend:
                 {
                     "statusNow": {
                         "acSwitch": 1,
-                        "status": 2,
+                        "status": 1,
                         "cycleChoice": 2,
                         "mainSettingTemp": 7,
                         "mainSettingTempNew": 21.0,

@@ -11,7 +11,7 @@ from pybyd.models.charging import ChargingStatus
 from pybyd.models.control import SeatClimateParams
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
-from pybyd.models.hvac import HvacStatus
+from pybyd.models.hvac import AcSwitch, HvacOverallStatus, HvacStatus
 from pybyd.models.push_notification import PushNotificationState
 from pybyd.models.realtime import (
     AirCirculationMode,
@@ -39,7 +39,7 @@ class TestBydEnum:
         assert PowerGear(99) == PowerGear.UNKNOWN
 
     def test_known_value(self) -> None:
-        assert PowerGear(3) == PowerGear.DRIVE
+        assert PowerGear(3) == PowerGear.ON
 
     def test_all_enums_have_unknown(self) -> None:
         for cls in (
@@ -145,8 +145,8 @@ class TestVehicleRealtimeData:
 
     def test_enum_fields(self) -> None:
         data = VehicleRealtimeData.model_validate(self.SAMPLE_PAYLOAD)
-        assert data.power_gear == PowerGear.DRIVE
-        assert data.air_run_state == AirCirculationMode.INTERNAL
+        assert data.power_gear == PowerGear.ON
+        assert data.air_run_state == AirCirculationMode.EXTERNAL
         assert data.main_seat_heat_state == SeatHeatVentState.HIGH
         assert data.charging_state == ChargingState.UNKNOWN
         assert data.charge_state == ChargingState.CONNECTED
@@ -207,6 +207,53 @@ class TestVehicleRealtimeData:
         data = VehicleRealtimeData.model_validate(self.SAMPLE_PAYLOAD)
         assert data.is_locked is True
 
+    def test_is_locked_none_when_all_unavailable(self) -> None:
+        """is_locked returns None when all door locks report UNAVAILABLE (0)."""
+        data = VehicleRealtimeData.model_validate(
+            {
+                "leftFrontDoorLock": 0,
+                "rightFrontDoorLock": 0,
+                "leftRearDoorLock": 0,
+                "rightRearDoorLock": 0,
+            }
+        )
+        assert data.left_front_door_lock == LockState.UNAVAILABLE
+        assert data.is_locked is None
+
+    def test_is_locked_none_when_all_unknown(self) -> None:
+        """is_locked returns None when no lock data is present."""
+        data = VehicleRealtimeData.model_validate({})
+        assert data.is_locked is None
+
+    def test_is_locked_ignores_unavailable_locks(self) -> None:
+        """UNAVAILABLE locks are excluded; remaining LOCKED locks return True."""
+        data = VehicleRealtimeData.model_validate(
+            {
+                "leftFrontDoorLock": 2,  # LOCKED
+                "rightFrontDoorLock": 0,  # UNAVAILABLE – ignored
+                "leftRearDoorLock": 2,  # LOCKED
+                "rightRearDoorLock": 2,  # LOCKED
+            }
+        )
+        assert data.is_locked is True
+
+    def test_is_locked_false_when_one_unlocked(self) -> None:
+        """is_locked returns False when any known lock is UNLOCKED."""
+        data = VehicleRealtimeData.model_validate(
+            {
+                "leftFrontDoorLock": 2,  # LOCKED
+                "rightFrontDoorLock": 1,  # UNLOCKED
+                "leftRearDoorLock": 2,  # LOCKED
+                "rightRearDoorLock": 2,  # LOCKED
+            }
+        )
+        assert data.is_locked is False
+
+    def test_lock_state_unavailable_value(self) -> None:
+        """LockState(0) is UNAVAILABLE, not UNKNOWN."""
+        assert LockState(0) == LockState.UNAVAILABLE
+        assert LockState(0) != LockState.UNKNOWN
+
     def test_recent_50km_energy_alias(self) -> None:
         data = VehicleRealtimeData.model_validate({"recent50kmEnergy": "15.2"})
         assert data.recent_50km_energy == "15.2"
@@ -218,6 +265,23 @@ class TestVehicleRealtimeData:
     def test_gl_none_when_missing(self) -> None:
         data = VehicleRealtimeData.model_validate({})
         assert data.gl is None
+
+    @pytest.mark.parametrize(
+        ("charging_state", "expected"),
+        [
+            (ChargingState.CHARGING, True),
+            (ChargingState.CONNECTED, False),
+            (ChargingState.NOT_CHARGING, False),
+            (ChargingState.UNKNOWN, False),
+        ],
+    )
+    def test_is_charging_strict_charging_state(
+        self,
+        charging_state: ChargingState,
+        expected: bool,
+    ) -> None:
+        data = VehicleRealtimeData.model_validate({"chargingState": int(charging_state)})
+        assert data.is_charging is expected
 
 
 # ------------------------------------------------------------------
@@ -231,7 +295,7 @@ class TestHvacStatus:
             {
                 "statusNow": {
                     "acSwitch": "1",
-                    "status": "2",
+                    "status": "1",
                     "mainSettingTempNew": "21.5",
                     "tempInCar": "20.0",
                     "mainSeatHeatState": 3,
@@ -239,30 +303,34 @@ class TestHvacStatus:
                 }
             }
         )
-        assert data.ac_switch == 1
-        assert data.status == 2
+        # ac_switch only has UNKNOWN(-1) defined — value "1" falls back to UNKNOWN
+        assert data.ac_switch == AcSwitch.UNKNOWN
+        assert data.status == HvacOverallStatus.ON
         assert data.main_setting_temp_new == 21.5
         assert data.temp_in_car == 20.0
         assert data.main_seat_heat_state == SeatHeatVentState.HIGH
         assert data.pm25_state_out_car == 0
 
     def test_is_ac_on(self) -> None:
-        data = HvacStatus.model_validate({"statusNow": {"acSwitch": 1}})
+        data = HvacStatus.model_validate({"statusNow": {"status": 1}})
         assert data.is_ac_on is True
 
-    def test_is_ac_on_prefers_switch_off(self) -> None:
-        # Explicit switch-off should win over any stale/lagging overall status.
-        data = HvacStatus.model_validate({"statusNow": {"acSwitch": 0, "status": 2}})
+    def test_is_ac_on_off(self) -> None:
+        data = HvacStatus.model_validate({"statusNow": {"status": 2}})
         assert data.is_ac_on is False
 
     def test_is_ac_on_falls_back_to_status(self) -> None:
-        # When the switch field is absent/unknown, allow status to indicate activity.
-        data = HvacStatus.model_validate({"statusNow": {"status": 2}})
+        # When the status indicates ON (1), is_ac_on should be True.
+        data = HvacStatus.model_validate({"statusNow": {"status": 1}})
         assert data.is_ac_on is True
 
-    def test_is_climate_active_switch_or_status(self) -> None:
-        data = HvacStatus.model_validate({"statusNow": {"acSwitch": 0, "status": 2}})
+    def test_is_climate_active_on(self) -> None:
+        data = HvacStatus.model_validate({"statusNow": {"status": 1}})
         assert data.is_climate_active is True
+
+    def test_is_climate_active_off(self) -> None:
+        data = HvacStatus.model_validate({"statusNow": {"status": 2}})
+        assert data.is_climate_active is False
 
 
 # ------------------------------------------------------------------
@@ -300,6 +368,23 @@ class TestChargingStatus:
         """time normalised to updateTime."""
         data = ChargingStatus.model_validate({"time": "1700000000"})
         assert data.update_time == datetime.fromtimestamp(1700000000, tz=UTC)
+
+    @pytest.mark.parametrize(
+        ("charging_state", "expected"),
+        [
+            (1, True),
+            (0, False),
+            (15, False),
+            (2, False),
+        ],
+    )
+    def test_is_charging_strict_state_code(
+        self,
+        charging_state: int,
+        expected: bool,
+    ) -> None:
+        data = ChargingStatus.model_validate({"chargingState": charging_state})
+        assert data.is_charging is expected
 
 
 # ------------------------------------------------------------------
@@ -509,7 +594,7 @@ class TestTimeToFullMinutes:
 
 class TestConvenienceProperties:
     def test_is_vehicle_on_true(self) -> None:
-        data = VehicleRealtimeData.model_validate({"vehicleState": 0})
+        data = VehicleRealtimeData.model_validate({"powerGear": 3})
         assert data.is_vehicle_on is True
 
     def test_is_vehicle_on_false(self) -> None:
@@ -533,11 +618,11 @@ class TestConvenienceProperties:
         assert data.is_battery_heating is None
 
     def test_is_steering_wheel_heating_on(self) -> None:
-        data = VehicleRealtimeData.model_validate({"steeringWheelHeatState": 1})
+        data = VehicleRealtimeData.model_validate({"steeringWheelHeatState": -1})
         assert data.is_steering_wheel_heating is True
 
     def test_is_steering_wheel_heating_off(self) -> None:
-        data = VehicleRealtimeData.model_validate({"steeringWheelHeatState": 0})
+        data = VehicleRealtimeData.model_validate({"steeringWheelHeatState": 1})
         assert data.is_steering_wheel_heating is False
 
     def test_is_steering_wheel_heating_none(self) -> None:
@@ -545,20 +630,20 @@ class TestConvenienceProperties:
         assert data.is_steering_wheel_heating is None
 
     def test_hvac_is_steering_wheel_heating_on(self) -> None:
-        data = HvacStatus.model_validate({"statusNow": {"steeringWheelHeatState": 1}})
+        data = HvacStatus.model_validate({"statusNow": {"steeringWheelHeatState": -1}})
         assert data.is_steering_wheel_heating is True
 
     def test_hvac_is_steering_wheel_heating_off(self) -> None:
-        data = HvacStatus.model_validate({"statusNow": {"steeringWheelHeatState": 0}})
+        data = HvacStatus.model_validate({"statusNow": {"steeringWheelHeatState": 1}})
         assert data.is_steering_wheel_heating is False
 
     def test_steering_wheel_byd_typo_alias(self) -> None:
         """BYD API sends 'stearingWheelHeatState' (typo); alias maps it."""
-        data = VehicleRealtimeData.model_validate({"stearingWheelHeatState": 1})
+        data = VehicleRealtimeData.model_validate({"stearingWheelHeatState": -1})
         assert data.is_steering_wheel_heating is True
 
     def test_hvac_steering_wheel_byd_typo_alias(self) -> None:
-        data = HvacStatus.model_validate({"statusNow": {"stearingWheelHeatState": 1}})
+        data = HvacStatus.model_validate({"statusNow": {"stearingWheelHeatState": -1}})
         assert data.is_steering_wheel_heating is True
 
 
@@ -568,14 +653,16 @@ class TestConvenienceProperties:
 
 
 class TestSeatHeatVentStateToCommandLevel:
-    def test_off_maps_to_one(self) -> None:
-        assert SeatHeatVentState.OFF.to_command_level() == 1
+    """Command scale is *inverted*: HIGH=1, LOW=2, OFF=3."""
+
+    def test_off_maps_to_three(self) -> None:
+        assert SeatHeatVentState.OFF.to_command_level() == 3
 
     def test_low_maps_to_two(self) -> None:
         assert SeatHeatVentState.LOW.to_command_level() == 2
 
-    def test_high_maps_to_three(self) -> None:
-        assert SeatHeatVentState.HIGH.to_command_level() == 3
+    def test_high_maps_to_one(self) -> None:
+        assert SeatHeatVentState.HIGH.to_command_level() == 1
 
     def test_no_data_maps_to_zero(self) -> None:
         assert SeatHeatVentState.NO_DATA.to_command_level() == 0
@@ -590,44 +677,59 @@ class TestSeatHeatVentStateToCommandLevel:
 
 
 class TestSeatClimateParamsFromCurrentState:
+    """from_current_state() should use the inverted command scale."""
+
     def test_from_hvac_only(self) -> None:
         hvac = HvacStatus.model_validate(
             {
                 "statusNow": {
-                    "mainSeatHeatState": 3,  # HIGH
+                    "mainSeatHeatState": 3,  # HIGH (status)
                     "mainSeatVentilationState": 0,  # NO_DATA
-                    "copilotSeatHeatState": 2,  # LOW
-                    "stearingWheelHeatState": 1,  # ON
+                    "copilotSeatHeatState": 2,  # LOW (status)
+                    "stearingWheelHeatState": 1,  # ON (status: StearingWheelHeat.OFF=1? No.)
                 }
             }
         )
         params = SeatClimateParams.from_current_state(hvac=hvac)
-        assert params.main_heat == 3  # HIGH → 3
+        # HIGH status (3) → command 1 (most powerful)
+        assert params.main_heat == 1
         assert params.main_ventilation == 0  # NO_DATA → 0
-        assert params.copilot_heat == 2  # LOW → 2
-        assert params.steering_wheel_heat == 1
+        # LOW status (2) → command 2 (least powerful)
+        assert params.copilot_heat == 2
+        # stearingWheelHeatState=1 → StearingWheelHeat.OFF → command 3
+        assert params.steering_wheel_heat_state == 3
+
+    def test_from_hvac_steering_wheel_on(self) -> None:
+        """StearingWheelHeat.ON (status -1) → command 1."""
+        hvac = HvacStatus.model_validate({"statusNow": {"steeringWheelHeatState": -1}})
+        params = SeatClimateParams.from_current_state(hvac=hvac)
+        assert params.steering_wheel_heat_state == 1  # on
 
     def test_from_realtime_fallback(self) -> None:
         realtime = VehicleRealtimeData.model_validate(
             {
-                "mainSeatHeatState": 2,  # LOW
-                "stearingWheelHeatState": 0,  # OFF
+                "mainSeatHeatState": 2,  # LOW (status)
+                "stearingWheelHeatState": 1,  # OFF (StearingWheelHeat.OFF=1)
             }
         )
         params = SeatClimateParams.from_current_state(realtime=realtime)
-        assert params.main_heat == 2  # LOW → 2
-        assert params.steering_wheel_heat == 0
+        # LOW status → command 2
+        assert params.main_heat == 2
+        # StearingWheelHeat.OFF → command 3 (off)
+        assert params.steering_wheel_heat_state == 3
 
     def test_hvac_preferred_over_realtime(self) -> None:
         hvac = HvacStatus.model_validate({"statusNow": {"mainSeatHeatState": 3}})  # HIGH
         realtime = VehicleRealtimeData.model_validate({"mainSeatHeatState": 2})  # LOW
         params = SeatClimateParams.from_current_state(hvac=hvac, realtime=realtime)
-        assert params.main_heat == 3  # uses HVAC HIGH, not realtime LOW
+        # Uses HVAC HIGH (3) → command 1
+        assert params.main_heat == 1
 
-    def test_no_data_defaults_to_zero(self) -> None:
+    def test_no_data_defaults(self) -> None:
         params = SeatClimateParams.from_current_state()
         assert params.main_heat == 0
-        assert params.steering_wheel_heat == 0
+        assert params.steering_wheel_heat_state == 3  # default off
+        assert params.remote_mode == 1
 
 
 # ------------------------------------------------------------------
