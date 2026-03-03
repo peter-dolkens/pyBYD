@@ -8,14 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from pybyd._crypto.hashing import md5_hex
 
-#: Default session token time-to-live in seconds (12 hours).
-#: The BYD API does not return an explicit expiry; this is a safe
-#: conservative default derived from observed session lifetimes.
-DEFAULT_SESSION_TTL: float = 12 * 3600
-
 
 class Session(BaseModel):
-    """Mutable session state after successful login..
+    """Mutable session state after successful login.
 
     Parameters
     ----------
@@ -44,7 +39,7 @@ class Session(BaseModel):
     sign_token: str
     encry_token: str
     created_at: float = Field(default_factory=time.monotonic)
-    ttl: float = DEFAULT_SESSION_TTL
+    ttl: float = 12 * 3600
 
     def content_key(self) -> str:
         """AES key for encrypting/decrypting inner payload data.

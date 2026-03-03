@@ -94,7 +94,7 @@ class FakeBydBackend:
             event="remoteControl",
             vin=self.vin,
             topic="oversea/res/user-1",
-            payload={"data": {"respondData": {"res": 2, "message": "ok", "requestSerial": "CMD-1"}}},
+            payload={"data": {"uuid": "CMD-1", "respondData": {"res": 2, "message": "ok"}}},
         )
         asyncio.get_running_loop().call_later(0.01, self.mqtt_event_handler, event)
 

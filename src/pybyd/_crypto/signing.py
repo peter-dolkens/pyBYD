@@ -1,7 +1,4 @@
-"""Request signing for BYD API.
-
-Ports buildSignString from client.js.
-"""
+"""Request signing for BYD API."""
 
 from __future__ import annotations
 

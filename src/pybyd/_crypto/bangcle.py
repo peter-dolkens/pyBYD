@@ -1,7 +1,4 @@
-"""Bangcle envelope encoding/decoding using white-box AES.
-
-Ports encodeEnvelope and decodeEnvelope from bangcle.js.
-"""
+"""Bangcle envelope encoding/decoding using white-box AES."""
 
 from __future__ import annotations
 
@@ -83,10 +80,7 @@ def _load_tables_from_bin(data: bytes) -> BangcleTables:
 
 
 def _normalise_envelope_input(envelope: str) -> str:
-    """Normalise a Bangcle envelope string for base64 decoding.
-
-    Mirrors bangcle.js normaliseCheckcodeInput (lines 335-350).
-    """
+    """Normalise a Bangcle envelope string for base64 decoding."""
     cleaned = envelope.replace(" ", "").replace("\t", "").replace("\n", "").replace("\r", "").strip()
     # URL-safe base64 normalization
     cleaned = cleaned.replace("-", "+").replace("_", "/")

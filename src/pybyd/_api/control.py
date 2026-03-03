@@ -31,20 +31,20 @@ from pybyd.session import Session
 
 _logger = logging.getLogger(__name__)
 
-CONTROL_PASSWORD_ERROR_CODES: frozenset[str] = frozenset({"5005", "5006"})
-REMOTE_CONTROL_SERVICE_ERROR_CODES: frozenset[str] = frozenset({"1009"})
-REMOTE_CONTROL_GENERIC_ERROR_CODES: frozenset[str] = frozenset({"1001"})
-REMOTE_CONTROL_ENDPOINTS: frozenset[str] = frozenset({"/control/remoteControl", "/control/remoteControlResult"})
-VERIFY_CONTROL_PASSWORD_ENDPOINT = "/vehicle/vehicleswitch/verifyControlPassword"
+_CONTROL_PASSWORD_ERROR_CODES: frozenset[str] = frozenset({"5005", "5006"})
+_REMOTE_CONTROL_SERVICE_ERROR_CODES: frozenset[str] = frozenset({"1009"})
+_REMOTE_CONTROL_GENERIC_ERROR_CODES: frozenset[str] = frozenset({"1001"})
+_REMOTE_CONTROL_ENDPOINTS: frozenset[str] = frozenset({"/control/remoteControl", "/control/remoteControlResult"})
+_VERIFY_CONTROL_PASSWORD_ENDPOINT = "/vehicle/vehicleswitch/verifyControlPassword"
 
 # Extra error-code mappings for control endpoints.
 _CONTROL_EXTRA_CODES: dict[frozenset[str], type[BydApiError]] = {
-    CONTROL_PASSWORD_ERROR_CODES: BydControlPasswordError,
+    _CONTROL_PASSWORD_ERROR_CODES: BydControlPasswordError,
 }
 _REMOTE_CONTROL_EXTRA_CODES: dict[frozenset[str], type[BydApiError]] = {
-    CONTROL_PASSWORD_ERROR_CODES: BydControlPasswordError,
-    REMOTE_CONTROL_SERVICE_ERROR_CODES: BydRemoteControlError,
-    REMOTE_CONTROL_GENERIC_ERROR_CODES: BydRemoteControlError,
+    _CONTROL_PASSWORD_ERROR_CODES: BydControlPasswordError,
+    _REMOTE_CONTROL_SERVICE_ERROR_CODES: BydRemoteControlError,
+    _REMOTE_CONTROL_GENERIC_ERROR_CODES: BydRemoteControlError,
 }
 
 
@@ -105,7 +105,7 @@ async def verify_control_password(
     """
     inner = _build_verify_control_password_inner(config, vin, command_pwd)
     data = await post_token_json(
-        endpoint=VERIFY_CONTROL_PASSWORD_ENDPOINT,
+        endpoint=_VERIFY_CONTROL_PASSWORD_ENDPOINT,
         config=config,
         session=session,
         transport=transport,
@@ -171,7 +171,7 @@ async def _fetch_control_endpoint(
     # Build extra code map: for remote control endpoints, include service errors.
     # For remote control endpoints, do NOT pass not_supported_codes — code 1001
     # means something different (generic rejection) for commands vs data endpoints.
-    is_remote = endpoint in REMOTE_CONTROL_ENDPOINTS
+    is_remote = endpoint in _REMOTE_CONTROL_ENDPOINTS
     extra = _REMOTE_CONTROL_EXTRA_CODES if is_remote else _CONTROL_EXTRA_CODES
     result = await post_token_json(
         endpoint=endpoint,
@@ -185,6 +185,8 @@ async def _fetch_control_endpoint(
     )
 
     next_serial = (result.get("requestSerial") if isinstance(result, dict) else None) or request_serial
+    if isinstance(result, dict) and next_serial:
+        result.setdefault("requestSerial", next_serial)
 
     return result, next_serial
 
@@ -205,6 +207,7 @@ async def poll_remote_control(
     command_retries: int = 3,
     command_retry_delay: float = 3.0,
     mqtt_result_waiter: Callable[[str | None], Awaitable[RemoteControlResult | None]] | None = None,
+    on_trigger_dispatched: Callable[[str | None], None] | None = None,
 ) -> RemoteControlResult:
     """Send a remote control command and poll until completion.
 
@@ -270,6 +273,7 @@ async def poll_remote_control(
                 rate_limit_retries=rate_limit_retries,
                 rate_limit_delay=rate_limit_delay,
                 mqtt_result_waiter=mqtt_result_waiter,
+                on_trigger_dispatched=on_trigger_dispatched,
             )
         except BydRemoteControlError as exc:
             last_exc = exc
@@ -302,6 +306,7 @@ async def _poll_remote_control_once(
     rate_limit_retries: int = 3,
     rate_limit_delay: float = 5.0,
     mqtt_result_waiter: Callable[[str | None], Awaitable[RemoteControlResult | None]] | None = None,
+    on_trigger_dispatched: Callable[[str | None], None] | None = None,
 ) -> RemoteControlResult:
     """Single attempt: trigger + poll.  Raises on failure."""
     # Phase 1: Trigger request (with control params) — retry on 6024
@@ -317,6 +322,11 @@ async def _poll_remote_control_once(
                 control_params=control_params,
                 command_pwd=command_pwd,
             )
+            if on_trigger_dispatched is not None:
+                try:
+                    on_trigger_dispatched(serial)
+                except Exception:
+                    _logger.debug("on_trigger_dispatched callback failed", exc_info=True)
             break
         except BydApiError as exc:
             if exc.code == "6024":
@@ -364,13 +374,20 @@ async def _poll_remote_control_once(
         try:
             mqtt_result = await mqtt_result_waiter(serial)
             if mqtt_result is not None:
-                _logger.debug(
-                    "Remote control %s resolved via MQTT success=%s state=%s",
-                    command.name,
-                    mqtt_result.success,
-                    mqtt_result.control_state,
-                )
-                return mqtt_result
+                mqtt_terminal = _is_remote_control_ready(mqtt_result.model_dump(by_alias=True))
+                if not mqtt_terminal:
+                    _logger.debug(
+                        "Remote control %s MQTT result still pending; falling back to polling",
+                        command.name,
+                    )
+                else:
+                    _logger.debug(
+                        "Remote control %s resolved via MQTT success=%s state=%s",
+                        command.name,
+                        mqtt_result.success,
+                        mqtt_result.control_state,
+                    )
+                    return mqtt_result
             _logger.debug("Remote control %s mqtt_wait returned no result; falling back to polling", command.name)
         except Exception:
             _logger.debug("Remote control %s mqtt_wait failed; falling back to polling", command.name, exc_info=True)

@@ -1,10 +1,4 @@
-"""Charging status model.
-
-Mapped from ``/control/smartCharge/homePage`` response documented in API_MAPPING.md.
-"""
-
-# 16.02.2026 initial findings suggest this is not used, atleast not for EV charging.
-# charging an EV vehicle does not populate any of this data.
+"""Charging status model."""
 
 from __future__ import annotations
 

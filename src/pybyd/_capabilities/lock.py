@@ -1,0 +1,56 @@
+"""Lock/unlock capability."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from pybyd._state_engine import ProjectionSpec
+from pybyd.models.realtime import LockState
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+
+class LockCapability:
+    """Vehicle lock/unlock commands with projection support."""
+
+    def __init__(
+        self,
+        *,
+        lock_fn: Callable[..., Awaitable[Any]],
+        unlock_fn: Callable[..., Awaitable[Any]],
+        vin: str,
+        execute_command: Callable[..., Awaitable[None]],
+    ) -> None:
+        self._lock_fn = lock_fn
+        self._unlock_fn = unlock_fn
+        self._vin = vin
+        self._execute = execute_command
+
+    async def lock(self) -> None:
+        """Lock all vehicle doors."""
+        specs = [
+            ProjectionSpec("realtime", "left_front_door_lock", LockState.LOCKED),
+            ProjectionSpec("realtime", "right_front_door_lock", LockState.LOCKED),
+            ProjectionSpec("realtime", "left_rear_door_lock", LockState.LOCKED),
+            ProjectionSpec("realtime", "right_rear_door_lock", LockState.LOCKED),
+        ]
+
+        async def _cmd() -> Any:
+            return await self._lock_fn(self._vin)
+
+        await self._execute(_cmd, specs)
+
+    async def unlock(self) -> None:
+        """Unlock all vehicle doors."""
+        specs = [
+            ProjectionSpec("realtime", "left_front_door_lock", LockState.UNLOCKED),
+            ProjectionSpec("realtime", "right_front_door_lock", LockState.UNLOCKED),
+            ProjectionSpec("realtime", "left_rear_door_lock", LockState.UNLOCKED),
+            ProjectionSpec("realtime", "right_rear_door_lock", LockState.UNLOCKED),
+        ]
+
+        async def _cmd() -> Any:
+            return await self._unlock_fn(self._vin)
+
+        await self._execute(_cmd, specs)

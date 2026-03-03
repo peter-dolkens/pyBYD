@@ -1,7 +1,5 @@
 """Energy consumption data model."""
 
-# 16.02.2026 initial findings suggest this is locked behind specific car models - meaning its untested.
-
 from __future__ import annotations
 
 from pybyd.models._base import BydBaseModel

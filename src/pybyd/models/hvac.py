@@ -1,7 +1,4 @@
-"""HVAC / climate control status model.
-
-Mapped from ``/control/getStatusNow`` response documented in API_MAPPING.md.
-"""
+"""HVAC / climate control status model."""
 
 from __future__ import annotations
 
@@ -26,14 +23,13 @@ __all__ = [
 
 
 class AcSwitch(BydEnum):
-    """AcSwitch on/off state."""
+    """A/C switch state. Relationship to ``HvacOverallStatus`` is unclear."""
 
-    # we currently do not know what this is. its not related to the if its on/off it seems, see HvacOverallStatus.
     UNKNOWN = -1
 
 
 class HvacOverallStatus(BydEnum):
-    """Overall HVAC status."""
+    """Overall HVAC on/off status."""
 
     UNKNOWN = -1
     ON = 1
@@ -41,28 +37,26 @@ class HvacOverallStatus(BydEnum):
 
 
 class AirConditioningMode(BydEnum):
-    """A/C control mode code."""
+    """A/C control mode."""
 
-    # couldnt get reliable results here.
     UNKNOWN = -1
     AUTO = 1
     MANUAL = 2
 
 
 class HvacWindMode(BydEnum):
-    """Fan (wind) mode — airflow direction."""
+    """Fan mode / airflow direction."""
 
-    # couldnt get reliable results here. not all are confirmed.
     UNKNOWN = -1
     FACE = 1
     FACE_FOOT = 2
     FOOT = 3
     FOOT_DEFROST = 4
-    DEFROST = 5  # aka warm front windshield
+    DEFROST = 5
 
 
 class HvacWindPosition(BydEnum):
-    """Airflow direction code (wind position)."""
+    """Fan speed / airflow position."""
 
     UNKNOWN = -1
     OFF = 0
@@ -88,43 +82,41 @@ class HvacStatus(BydBaseModel):
 
     # --- A/C state ---
     ac_switch: AcSwitch | int | None = None
-    """0=off, 1=on (confirmed)."""
+    """A/C switch state."""
     status: HvacOverallStatus | int | None = None
-    """Overall HVAC status; ``2`` observed while A/C active (confirmed)."""
+    """Overall HVAC status."""
     air_conditioning_mode: AirConditioningMode | int | None = None
-    """Mode code; ``1`` observed (confirmed)."""
+    """A/C mode (auto / manual)."""
     wind_mode: HvacWindMode | int | None = None
-    """Fan mode code; ``3`` observed (confirmed)."""
+    """Fan mode / airflow direction."""
     wind_position: HvacWindPosition | int | None = None
-    """Airflow direction (unconfirmed)."""
+    """Fan speed / airflow position."""
     cycle_choice: AirCirculationMode | int | None = None
-    """``2`` observed in live capture (confirmed); exact mapping still unconfirmed."""
+    """Air circulation mode (external / internal)."""
 
     # --- Temperature ---
     main_setting_temp: float | None = None
-    """Set temp integer on BYD scale (1-17) (confirmed)."""
+    """Driver-side set temperature on BYD scale (1-17)."""
     main_setting_temp_new: float | None = None
-    """Set temp (°C, precise) (confirmed)."""
+    """Driver-side set temperature (deg C, precise)."""
     copilot_setting_temp: float | None = None
-    """Passenger set temp on BYD scale (1-17) (confirmed)."""
+    """Passenger-side set temperature on BYD scale (1-17)."""
     copilot_setting_temp_new: float | None = None
-    """Passenger set temp (°C, precise) (confirmed)."""
+    """Passenger-side set temperature (deg C, precise)."""
     temp_in_car: float | None = None
-    """Interior °C; ``-129`` means unavailable (confirmed)."""
+    """Interior temperature (deg C). Sentinel ``-129`` -> ``None``."""
     temp_out_car: float | None = None
-    """Exterior °C (confirmed)."""
+    """Exterior temperature (deg C)."""
     whether_support_adjust_temp: int | None = None
-    """1=supported (confirmed)."""
+    """1 = dual-zone temperature adjustment supported."""
 
     # --- Defrost ---
     front_defrost_status: int | None = None
-    """Front defrost status.  0=off, 1=on (confirmed).
-    BYD SDK ``getAcDefrostState(FRONT)`` (section 6.6.10)."""
+    """Front defrost status (0=off, 1=on)."""
     electric_defrost_status: int | None = None
-    """Rear (electric) defrost status.  0=off (confirmed).
-    BYD SDK ``getAcDefrostState(REAR)`` (section 6.6.10)."""
+    """Rear (electric) defrost status (0=off, 1=on)."""
     wiper_heat_status: int | None = None
-    """Wiper heater status.  0=off (confirmed)."""
+    """Wiper heater status (0=off)."""
 
     # --- Seat heating / ventilation ---
     main_seat_heat_state: SeatHeatVentState | None = None
@@ -147,32 +139,13 @@ class HvacStatus(BydBaseModel):
 
     # --- Air quality ---
     pm: float | None = None
-    """PM2.5 value; 0 observed (confirmed).
-    BYD SDK ``getPM25Value()`` (section 6.7.5)."""
+    """PM2.5 reading."""
     pm25_state_out_car: float | None = None
-    """Outside PM2.5 state; 0 observed (confirmed).
-    BYD SDK ``getPM25Level(OUT)`` (section 6.7.4)."""
+    """Exterior PM2.5 level."""
 
     @property
     def is_ac_on(self) -> bool:
         """Whether the A/C is currently on."""
-        if self.status is None:
-            return False
-        try:
-            # this might be wrong in the long run, but ac_switch is not reliable.
-            return int(self.status) == int(HvacOverallStatus.ON)
-        except (TypeError, ValueError):
-            return False
-
-    @property
-    def is_climate_active(self) -> bool:
-        """Whether the HVAC system appears active.
-
-        This is a more permissive signal than :pyattr:`is_ac_on` and is
-        intended for consumers that want a best-effort "climate running"
-        indicator even when the explicit switch field is missing or
-        temporarily inconsistent.
-        """
         if self.status is None:
             return False
         try:
@@ -182,11 +155,7 @@ class HvacStatus(BydBaseModel):
 
     @property
     def interior_temp_available(self) -> bool:
-        """Whether interior temperature reading is valid.
-
-        After sentinel normalisation ``temp_in_car`` is ``None`` when
-        the BYD API returned ``-129``, so a simple ``is not None`` suffices.
-        """
+        """Whether interior temperature reading is valid."""
         return self.temp_in_car is not None
 
     @property
@@ -206,9 +175,6 @@ class HvacStatus(BydBaseModel):
             return values
         status_now = values.get("statusNow")
         if isinstance(status_now, dict):
-            # The parent _clean_byd_values ran on the outer dict before
-            # this validator.  Re-clean the inner dict so sentinel values
-            # (e.g. "--", "") inside statusNow are properly stripped.
             aliases: dict[str, str] = getattr(cls, "_KEY_ALIASES", {})
             return BydBaseModel._clean_dict(status_now, aliases)
         return values

@@ -12,9 +12,8 @@ from pybyd.models._base import BydBaseModel, BydTimestamp
 class GpsInfo(BydBaseModel):
     """GPS location data for a vehicle.
 
-    Confirmed MQTT payload keys: ``gpsTimeStamp``, ``latitude``,
-    ``longitude``, ``direction``.  The response nests these under
-    a ``data`` dict which is flattened automatically.
+    The response nests fields under a ``data`` dict which is
+    flattened automatically.
     """
 
     latitude: float | None = None

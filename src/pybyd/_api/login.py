@@ -2,8 +2,6 @@
 
 Endpoint:
   - /app/account/login
-
-Ports buildLoginRequest from client.js lines 231-286.
 """
 
 from __future__ import annotations

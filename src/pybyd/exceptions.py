@@ -7,10 +7,6 @@ class BydError(Exception):
     """Base exception for all pybyd errors."""
 
 
-class BydConfigError(BydError):
-    """Invalid or missing configuration."""
-
-
 class BydCryptoError(BydError):
     """Encryption or decryption failure."""
 
@@ -91,6 +87,16 @@ class BydEndpointNotSupportedError(BydApiError):
     endpoint is not available for the user's vehicle model, region, or
     firmware version.  Consumers should stop retrying the endpoint for
     the affected VIN.
+    """
+
+
+class BydDataUnavailableError(BydApiError):
+    """Vehicle cannot provide the requested data right now.
+
+    Raised when the API returns an error code indicating a temporary
+    data-availability issue — for example GPS code ``6051`` when the
+    vehicle has no satellite fix (e.g. parked in a garage).  Consumers
+    should retain the last-known value and retry later.
     """
 
 

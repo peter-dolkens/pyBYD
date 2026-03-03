@@ -24,11 +24,7 @@ class OnlineState(BydEnum):
 
 
 class ConnectState(BydEnum):
-    """T-Box connection state.
-
-    Note: observed as ``-1`` even while the vehicle is online and driving.
-    The exact semantics of this field vs ``OnlineState`` are unclear.
-    """
+    """T-Box connection state."""
 
     UNKNOWN = -1
     DISCONNECTED = 0
@@ -36,15 +32,7 @@ class ConnectState(BydEnum):
 
 
 class VehicleState(BydEnum):
-    """Vehicle power state.
-
-    Observed realtime mapping:
-    - ``0`` = on
-    - ``2`` = off
-
-    Value ``1`` is still observed (e.g. in vehicle-list payloads), but
-    realtime semantics for that code remain unclear.
-    """
+    """Vehicle power state."""
 
     UNKNOWN = -1
     ON = 0
@@ -57,15 +45,14 @@ class ChargingState(BydEnum):
     UNKNOWN = -1
     NOT_CHARGING = 0
     CHARGING = 1
-    CONNECTED = 15  # charging gun connected, not actively charging
+    CONNECTED = 15
+    # We previously thought value 15 represented "connected", but this value
+    # does not change when the charging gun is disconnected, so we should not
+    # rely on it.
 
 
 class TirePressureUnit(BydEnum):
-    """Unit used for tire pressure readings.
-
-    BYD SDK ``getUnit()`` (section 6.16.4) defines
-    temperature, pressure, fuel, distance, and power units.
-    """
+    """Unit used for tire pressure readings."""
 
     UNKNOWN = -1
     BAR = 1
@@ -74,11 +61,7 @@ class TirePressureUnit(BydEnum):
 
 
 class DoorOpenState(BydEnum):
-    """Door/trunk open/closed state.
-
-    BYD SDK ``getDoorState()`` (section 6.1.5) defines
-    BODYWORK_STATE_CLOSED and BODYWORK_STATE_OPEN.
-    """
+    """Door/trunk open/closed state."""
 
     UNKNOWN = -1
     CLOSED = 0
@@ -88,55 +71,39 @@ class DoorOpenState(BydEnum):
 class LockState(BydEnum):
     """Door lock state.
 
-    BYD SDK ``getDoorLockState()`` (section 6.10.2).
-    Cloud API uses 1=unlocked, 2=locked (confirmed).
-    Value 0 is returned by the API when state is unavailable.
+    ``UNAVAILABLE`` (0) is returned by the API when state is unknown.
     """
 
     UNKNOWN = -1
-    UNAVAILABLE = 0  # BYD API returns 0 when state is unavailable
-    UNLOCKED = 1  # confirmed
-    LOCKED = 2  # confirmed
+    UNAVAILABLE = 0
+    UNLOCKED = 1
+    LOCKED = 2
 
 
 class WindowState(BydEnum):
-    """Window open/closed state.
-
-    BYD SDK ``getWindowState()`` (section 6.1.6) defines
-    BODYWORK_STATE_CLOSED and BODYWORK_STATE_OPEN.
-    Cloud API uses 1=closed, 2=open (note: differs from door encoding).
-    """
+    """Window open/closed state."""
 
     UNKNOWN = -1
-    CLOSED = 1  # confirmed
-    OPEN = 2  # assumed from BYD SDK: BODYWORK_STATE_OPEN
+    CLOSED = 1
+    OPEN = 2
 
 
 class PowerGear(BydEnum):
-    """Power Gear.
-
-    Previously thought to represent parked vs drive gear state, but observed values in realtime
-    data suggest it may instead represent whether the vehicle is powered on or off.
-    """
+    """Vehicle power state."""
 
     UNKNOWN = -1
     OFF = 1
-    ON = 3  # confirmed
+    ON = 3
 
 
 class StearingWheelHeat(BydEnum):
-    """Stearing wheel heating level.
+    """Steering wheel heating state.
 
-    Observed from live API data (status readings):
-    - -1 = on  (counter-intuitive but confirmed)
-    -  1 = off
-
-    Command values (for ``controlParamsMap``) use a different scale:
-    - 1 = on
-    - 3 = off
+    Status values: ``-1`` = on, ``1`` = off.
+    Command values use a different scale (see ``to_command_level``).
     """
 
-    ON = -1  # makes no sense, but tested live.
+    ON = -1
     OFF = 1
 
     def to_command_level(self) -> int:
@@ -148,62 +115,38 @@ class StearingWheelHeat(BydEnum):
 
 
 class SeatHeatVentState(BydEnum):
-    """Seat heating / ventilation / steering wheel heat level.
+    """Seat heating / ventilation level.
 
-    Observed from live API data:
-
-    - ``0`` = **no data** – the API returns this when the vehicle is
-      off or for stale/placeholder responses.  It does *not*
-      authoritatively indicate that the hardware is absent; only
-      that the current response carries no information for this seat.
-    - ``1`` = feature present but currently **off**
-    - ``2`` = **low**
-    - ``3`` = **high**
-
-    ``UNKNOWN`` (``-1``) is the :class:`BydEnum` fallback for any
-    integer the API sends that has no mapped member.
+    ``NO_DATA`` (0) means the API has no information for this seat
+    in the current response -- it does not indicate hardware absence.
     """
 
     UNKNOWN = -1
-    NO_DATA = 0  # API has no data for this seat right now
-    OFF = 1  # feature exists, currently inactive
+    NO_DATA = 0
+    OFF = 1
     LOW = 2
     HIGH = 3
 
     def to_command_level(self) -> int:
         """Return the value to send in a ``set_seat_climate()`` command.
 
-        The BYD API uses an **inverted** scale for commands compared to
-        status readings::
-
-            Status  →  Command
-            HIGH=3  →  1 (most powerful)
-            LOW=2   →  2 (least powerful)
-            OFF=1   →  3 (off)
-
-        ``NO_DATA`` (0) and ``UNKNOWN`` (−1) both map to ``0``
-        (no action / feature absent).
+        Command scale is inverted: HIGH=3 -> 1, LOW=2 -> 2, OFF=1 -> 3.
+        ``NO_DATA`` and ``UNKNOWN`` map to ``0`` (no action).
         """
         return _SEAT_STATUS_TO_COMMAND.get(self.value, 0)
 
 
-# Command scale (for controlParamsMap) is *inverted* compared to
-# the status scale: 1 = high, 2 = low, 3 = off.
 _SEAT_STATUS_TO_COMMAND: dict[int, int] = {
-    -1: 0,  # UNKNOWN  → no action
-    0: 0,  # NO_DATA  → no action
-    1: 3,  # OFF      → 3 (off)
-    2: 2,  # LOW      → 2 (low)
-    3: 1,  # HIGH     → 1 (high)
+    -1: 0,  # UNKNOWN  -> no action
+    0: 0,  # NO_DATA  -> no action
+    1: 3,  # OFF      -> 3 (off)
+    2: 2,  # LOW      -> 2 (low)
+    3: 1,  # HIGH     -> 1 (high)
 }
 
 
 class AirCirculationMode(BydEnum):
-    """Air circulation mode.
-
-    BYD SDK ``getAcCycleMode()`` (section 6.6.8) defines
-    internal (``AC_CYCLEMODE_INLOOP``) and external (``AC_CYCLEMODE_OUTLOOP``).
-    """
+    """Air circulation mode."""
 
     UNKNOWN = -1
     UNAVAILABLE = 0
@@ -244,6 +187,28 @@ class VehicleRealtimeData(BydBaseModel):
         "full_minute": is_negative,
         "remaining_hours": is_negative,
         "remaining_minutes": is_negative,
+        # ECT value uses both -129 (temp sentinel) and -1 (generic unavailable).
+        "ect_value": lambda v: is_temp_sentinel(v) or is_negative(v),
+        # Warning / status indicators: -1 means unavailable.
+        "ect": is_negative,
+        "abs_warning": is_negative,
+        "svs": is_negative,
+        "srs": is_negative,
+        "eps": is_negative,
+        "esp": is_negative,
+        "pwr": is_negative,
+        "power_system": is_negative,
+        "tirepressure_system": is_negative,
+        "rapid_tire_leak": is_negative,
+        "left_front_tire_status": is_negative,
+        "right_front_tire_status": is_negative,
+        "left_rear_tire_status": is_negative,
+        "right_rear_tire_status": is_negative,
+        "upgrade_status": is_negative,
+        # Fuel range: -1 means unavailable (BEV or no data).
+        "oil_endurance": is_negative,
+        # Charge rate: large negative sentinels when not charging.
+        "rate": lambda v: v is not None and v <= -9,
     }
 
     # --- Connection & state ---
@@ -263,76 +228,57 @@ class VehicleRealtimeData(BydBaseModel):
     """Alternative EV range field."""
     endurance_mileage_v2: float | None = None
     endurance_mileage_v2_unit: str | None = None
-    """Unit for endurance_mileage_v2 ('--' when unavailable)."""
     total_mileage: float | None = None
     """Odometer reading (km)."""
     total_mileage_v2: float | None = None
-    """V2 odometer field."""
     total_mileage_v2_unit: str | None = None
-    """Unit for total_mileage_v2."""
 
     # --- Driving ---
     speed: float | None = None
     """Current speed (km/h)."""
     power_gear: PowerGear | None = None
-    """Car on/off."""
+    """Vehicle power state (off / on)."""
 
     # --- Climate ---
     temp_in_car: float | None = None
-    """Interior temperature (deg C). ``-129.0`` means unavailable / car offline."""
+    """Interior temperature (deg C). Sentinel ``-129`` is normalised to ``None``."""
     main_setting_temp: int | None = None
     """Driver-side set temperature on BYD scale (1-17)."""
     main_setting_temp_new: float | None = None
-    """Driver-side set temperature (°C, precise)."""
+    """Driver-side set temperature (deg C, precise)."""
     air_run_state: AirCirculationMode | None = None
-    """Air circulation mode (0=unavailable, 1=internal, 2=external).
-    BYD SDK ``getAcCycleMode()`` (section 6.6.8): INLOOP / OUTLOOP."""
+    """Air circulation mode."""
 
     # --- Seat heating/ventilation ---
     main_seat_heat_state: SeatHeatVentState | None = None
-    """Driver seat heating level (0=off, 2=low, 3=high)."""
     main_seat_ventilation_state: SeatHeatVentState | None = None
-    """Driver seat ventilation level (0=off, 2=low, 3=high)."""
     copilot_seat_heat_state: SeatHeatVentState | None = None
-    """Passenger seat heating level (0=off, 2=low, 3=high)."""
     copilot_seat_ventilation_state: SeatHeatVentState | None = None
-    """Passenger seat ventilation level (0=off, 2=low, 3=high)."""
     steering_wheel_heat_state: StearingWheelHeat | None = None
-    """Steering wheel heating state (0=off, 2=low, 3=high)."""
     lr_seat_heat_state: SeatHeatVentState | None = None
-    """Left rear seat heating level (0=off, 2=low, 3=high)."""
     lr_seat_ventilation_state: SeatHeatVentState | None = None
-    """Left rear seat ventilation level (0=off, 2=low, 3=high)."""
     rr_seat_heat_state: SeatHeatVentState | None = None
-    """Right rear seat heating level (0=off, 2=low, 3=high)."""
     rr_seat_ventilation_state: SeatHeatVentState | None = None
-    """Right rear seat ventilation level (0=off, 2=low, 3=high)."""
 
     # --- Charging ---
     charging_state: ChargingState = ChargingState.UNKNOWN
-    """Legacy charging field from realtime payload.
+    """Charging field from the realtime payload.
 
-    Observed API behavior indicates this field may remain ``UNKNOWN`` (``-1``)
-    while ``charge_state`` carries authoritative charging status.
+    May remain ``UNKNOWN`` while ``charge_state`` carries the
+    authoritative status.  Prefer :pyattr:`effective_charging_state`.
     """
     charge_state: ChargingState | None = None
-    """Authoritative realtime charging state.
-
-    Observed values:
-    - ``0`` = not charging
-    - ``1`` = charging
-    - ``15`` = charging gun connected, not actively charging
-    """
+    """Authoritative realtime charging state."""
     wait_status: int | None = None
     """Charge wait status."""
     full_hour: int | None = None
-    """Estimated hours to full charge (-1=N/A)."""
+    """Estimated hours to full charge. Sentinel ``-1`` -> ``None``."""
     full_minute: int | None = None
-    """Estimated minutes to full charge (-1=N/A)."""
+    """Estimated minutes to full charge. Sentinel ``-1`` -> ``None``."""
     remaining_hours: int | None = None
-    """Remaining hours component."""
+    """Remaining hours component. Sentinel ``-1`` -> ``None``."""
     remaining_minutes: int | None = None
-    """Remaining minutes component."""
+    """Remaining minutes component. Sentinel ``-1`` -> ``None``."""
     booking_charge_state: int | None = None
     """Scheduled charging state (0=off)."""
     booking_charging_hour: int | None = None
@@ -347,9 +293,8 @@ class VehicleRealtimeData(BydBaseModel):
     right_rear_door: DoorOpenState | None = None
     trunk_lid: DoorOpenState | None = None
     sliding_door: DoorOpenState | None = None
-    """Sliding door state (0=closed, 1=open)."""
     forehold: DoorOpenState | None = None
-    """Front trunk/frunk state (0=closed, 1=open)."""
+    """Front trunk / frunk."""
 
     # --- Locks ---
     left_front_door_lock: LockState | None = None
@@ -375,31 +320,27 @@ class VehicleRealtimeData(BydBaseModel):
     left_rear_tire_status: int | None = None
     right_rear_tire_status: int | None = None
     tire_press_unit: TirePressureUnit | None = None
-    """1=bar, 2=psi, 3=kPa.
-    BYD SDK ``getUnit()`` (section 6.16.4) confirms pressure unit codes."""
+    """Pressure unit: BAR (1), PSI (2), KPA (3)."""
     tirepressure_system: int | None = None
-    """Tire pressure monitoring system state.
-    BYD SDK ``getTirePressureSystemStatus()`` (section 6.15.7)."""
+    """TPMS system state. 0=normal, >0=warning. Sentinel ``-1`` -> ``None``."""
     rapid_tire_leak: int | None = None
-    """Rapid tire leak detected (0=no).
-    BYD SDK ``getTireLeakageStatus()`` (section 6.15.2)."""
+    """Rapid tire leak indicator. 0=no leak, >0=leak. Sentinel ``-1`` -> ``None``."""
 
     # --- Energy consumption ---
     total_power: float | None = None
     gl: float | None = None
-    """Gross load (instantaneous battery power (W))"""
+    """Instantaneous battery power (W)."""
     total_energy: str | None = None
-    """Total energy (string, '--' when unavailable)."""
+    """Total energy (string; "--" when unavailable)."""
     nearest_energy_consumption: str | None = None
-    """Nearest energy consumption (string, '--' when unavailable)."""
+    """Nearest energy consumption (string; "--" when unavailable)."""
     nearest_energy_consumption_unit: str | None = None
-    """Unit for nearest energy consumption."""
     recent_50km_energy: str | None = None
-    """Recent 50km energy (string, '--' when unavailable)."""
+    """Recent 50 km energy (string; "--" when unavailable)."""
 
     # --- Fuel (hybrid vehicles) ---
     oil_endurance: float | None = None
-    """Fuel-based range (km)."""
+    """Fuel-based range (km). Sentinel ``-1`` -> ``None``."""
     oil_percent: float | None = None
     """Fuel percentage."""
     total_oil: float | None = None
@@ -407,27 +348,27 @@ class VehicleRealtimeData(BydBaseModel):
 
     # --- System indicators ---
     power_system: int | None = None
+    """Power system warning. 0=normal, >0=warning."""
     engine_status: int | None = None
+    """Engine status."""
     epb: int | None = None
-    """Electronic parking brake.
-    BYD SDK ``getParkBrakeSwitchState()`` (section 6.9.7): 0=released, 1=engaged."""
+    """Electronic parking brake. 0=released, 1=engaged."""
     eps: int | None = None
-    """Electric power steering warning."""
+    """Electric power steering warning. 0=normal, >0=warning."""
     esp: int | None = None
-    """Electronic stability program warning."""
+    """Electronic stability program warning. 0=normal, >0=warning."""
     abs_warning: int | None = None
-    """ABS warning light."""
+    """ABS warning. 0=normal, >0=warning."""
     svs: int | None = None
-    """Service vehicle soon."""
+    """Service vehicle soon. 0=normal, >0=warning."""
     srs: int | None = None
-    """Supplemental restraint system (airbag) warning."""
+    """Supplemental restraint system (airbag) warning. 0=normal, >0=warning."""
     ect: int | None = None
-    """Engine coolant temperature warning.
-    BYD SDK ``getCoolantLevel()`` (section 6.8.6)."""
+    """Engine coolant temperature warning. 0=normal, >0=warning."""
     ect_value: int | None = None
-    """Engine coolant temperature value."""
+    """Engine coolant temperature (deg C)."""
     pwr: int | None = None
-    """Power warning."""
+    """Power warning. 0=normal, >0=warning."""
 
     # --- Feature states ---
     sentry_status: int | None = None
@@ -437,11 +378,61 @@ class VehicleRealtimeData(BydBaseModel):
     charge_heat_state: int | None = None
     """Charge heating state."""
     upgrade_status: int | None = None
-    """OTA upgrade status."""
+    """OTA upgrade status. 0=none, >0=active."""
+
+    # --- Third-row seats ---
+    lr_third_heat_state: SeatHeatVentState | None = None
+    """Third-row left seat heat state."""
+    lr_third_ventilation_state: SeatHeatVentState | None = None
+    """Third-row left seat ventilation state."""
+    rr_third_heat_state: SeatHeatVentState | None = None
+    """Third-row right seat heat state."""
+    rr_third_ventilation_state: SeatHeatVentState | None = None
+    """Third-row right seat ventilation state."""
+
+    # --- Charging (extended) ---
+    rate: float | None = None
+    """Charge rate. Sentinel values (-999, -9) when not charging."""
+    less_one_min: bool | None = None
+    """Time-to-full is less than one minute."""
+
+    # --- Energy (extended) ---
+    energy_consumption: str | None = None
+    """Energy consumption value (string, differs from nearestEnergyConsumption)."""
+    total_consumption: str | None = None
+    """Chinese-locale total consumption label."""
+    total_consumption_en: str | None = None
+    """English-locale total consumption label (e.g. '16.6kW·h/100km')."""
+
+    # --- Fuel (extended) ---
+    oil_pressure_system: int | None = None
+    """Oil pressure warning. 0=normal."""
+
+    # --- Warnings (extended) ---
+    braking_system: int | None = None
+    """Braking system warning. 0=normal."""
+    charging_system: int | None = None
+    """Charging system warning. 0=normal."""
+    steering_system: int | None = None
+    """Steering system warning. 0=normal."""
+    ok_light: int | None = None
+    """OK/ready indicator. 0=off."""
+
+    # --- Features (extended) ---
+    repair_mode_switch: str | None = None
+    """Repair/service mode. '0'=off."""
+
+    # --- Misc ---
+    vehicle_time_zone: str | None = None
+    """Vehicle timezone (e.g. 'Europe/Rome')."""
+    power_battery_connection: int | None = None
+    """Battery connectivity indicator. -1=unknown, 0=disconnected."""
+    ins: int | None = None
+    """Unknown indicator field."""
 
     # --- Metadata ---
     timestamp: BydTimestamp = None
-    """Data timestamp from the ``time`` field (parsed to UTC datetime)."""
+    """Data timestamp (parsed to UTC datetime)."""
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -480,7 +471,7 @@ class VehicleRealtimeData(BydBaseModel):
     def effective_charging_state(self) -> ChargingState:
         """Canonical charging state derived from realtime payload.
 
-        ``charge_state`` is treated as the authoritative source.
+        ``charge_state`` is the authoritative source.
         """
         if self.charge_state is None:
             return ChargingState.UNKNOWN
@@ -488,11 +479,7 @@ class VehicleRealtimeData(BydBaseModel):
 
     @property
     def is_charging(self) -> bool:
-        """Whether the vehicle is currently charging.
-
-        Returns ``True`` only when canonical charging state is
-        :class:`ChargingState.CHARGING`.
-        """
+        """Whether the vehicle is currently charging."""
         return self.effective_charging_state == ChargingState.CHARGING
 
     @property
@@ -507,7 +494,6 @@ class VehicleRealtimeData(BydBaseModel):
     def time_to_full_minutes(self) -> int | None:
         """Total estimated minutes until fully charged.
 
-        Combines ``full_hour`` and ``full_minute`` into a single value.
         Returns ``None`` when either component is unavailable.
         """
         if self.full_hour is None or self.full_minute is None:
@@ -516,19 +502,14 @@ class VehicleRealtimeData(BydBaseModel):
 
     @property
     def interior_temp_available(self) -> bool:
-        """Whether interior temperature reading is valid.
-
-        After sentinel normalisation ``temp_in_car`` is ``None`` when
-        the BYD API returned ``-129``, so a simple ``is not None`` suffices.
-        """
+        """Whether interior temperature reading is valid."""
         return self.temp_in_car is not None
 
     @property
     def is_locked(self) -> bool | None:
-        """Whether all doors are locked (True if all known locks == LOCKED).
+        """Whether all doors are locked.
 
-        Returns ``None`` when all lock fields are absent, UNKNOWN, or UNAVAILABLE
-        (i.e. no authoritative state is available).
+        Returns ``None`` when no authoritative lock state is available.
         """
         locks = [
             self.left_front_door_lock,
@@ -575,20 +556,14 @@ class VehicleRealtimeData(BydBaseModel):
 
     @property
     def is_battery_heating(self) -> bool | None:
-        """Whether the battery heating system is active.
-
-        Returns ``None`` when the state is unknown.
-        """
+        """Whether the battery heating system is active."""
         if self.battery_heat_state is None:
             return None
         return bool(self.battery_heat_state)
 
     @property
     def is_steering_wheel_heating(self) -> bool | None:
-        """Whether steering wheel heating is active.
-
-        Returns ``None`` when the state is unknown.
-        """
+        """Whether steering wheel heating is active."""
         if self.steering_wheel_heat_state is None:
             return None
         return self.steering_wheel_heat_state == StearingWheelHeat.ON

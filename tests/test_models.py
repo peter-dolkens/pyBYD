@@ -8,7 +8,12 @@ import pytest
 
 from pybyd._constants import VALID_CLIMATE_DURATIONS, minutes_to_time_span
 from pybyd.models.charging import ChargingStatus
-from pybyd.models.control import SeatClimateParams
+from pybyd.models.control import (
+    CommandAckDiagnostics,
+    CommandLifecycleEvent,
+    CommandLifecycleStatus,
+    SeatClimateParams,
+)
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import AcSwitch, HvacOverallStatus, HvacStatus
@@ -315,7 +320,7 @@ class TestVehicleRealtimeData:
 # ------------------------------------------------------------------
 
 
-class TestHvacStatus:
+class TestHvacStatusStates:
     def test_camel_case_parsing(self) -> None:
         data = HvacStatus.model_validate(
             {
@@ -337,6 +342,8 @@ class TestHvacStatus:
         assert data.main_seat_heat_state == SeatHeatVentState.HIGH
         assert data.pm25_state_out_car == 0
 
+
+class TestHvacStatus:
     def test_is_ac_on(self) -> None:
         data = HvacStatus.model_validate({"statusNow": {"status": 1}})
         assert data.is_ac_on is True
@@ -350,13 +357,29 @@ class TestHvacStatus:
         data = HvacStatus.model_validate({"statusNow": {"status": 1}})
         assert data.is_ac_on is True
 
-    def test_is_climate_active_on(self) -> None:
-        data = HvacStatus.model_validate({"statusNow": {"status": 1}})
-        assert data.is_climate_active is True
 
-    def test_is_climate_active_off(self) -> None:
-        data = HvacStatus.model_validate({"statusNow": {"status": 2}})
-        assert data.is_climate_active is False
+class TestCommandLifecycleModels:
+    def test_command_lifecycle_event_parses_aliases(self) -> None:
+        event = CommandLifecycleEvent.model_validate(
+            {
+                "status": "matched",
+                "vin": "LC0CF4CD7N1000375",
+                "requestSerial": "SER-1",
+                "command": "LOCKDOOR",
+                "timestamp": "123",
+            }
+        )
+        assert event.status == CommandLifecycleStatus.MATCHED
+        assert event.request_serial == "SER-1"
+        assert event.timestamp == 123
+
+    def test_command_ack_diagnostics_defaults(self) -> None:
+        diagnostics = CommandAckDiagnostics.model_validate({})
+        assert diagnostics.pending == 0
+        assert diagnostics.matched == 0
+        assert diagnostics.expired == 0
+        assert diagnostics.uncorrelated == 0
+        assert diagnostics.pending_by_vin == {}
 
 
 # ------------------------------------------------------------------

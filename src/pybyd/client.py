@@ -8,7 +8,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
 
@@ -28,7 +28,7 @@ from pybyd._crypto.hashing import md5_hex
 from pybyd._mqtt import BydMqttRuntime, MqttEvent, fetch_mqtt_bootstrap
 from pybyd._transport import SecureTransport
 from pybyd.config import BydConfig
-from pybyd.exceptions import BydError, BydSessionExpiredError
+from pybyd.exceptions import BydDataUnavailableError, BydError, BydSessionExpiredError
 from pybyd.models._base import BydBaseModel
 from pybyd.models.charging import ChargingStatus
 from pybyd.models.control import (
@@ -36,6 +36,10 @@ from pybyd.models.control import (
     ClimateScheduleParams,
     ClimateStartParams,
     CommandAck,
+    CommandAckDiagnostics,
+    CommandAckEvent,
+    CommandLifecycleEvent,
+    CommandLifecycleStatus,
     ControlParams,
     RemoteCommand,
     RemoteControlResult,
@@ -51,10 +55,18 @@ from pybyd.models.smart_charging import SmartChargingSchedule
 from pybyd.models.vehicle import Vehicle
 from pybyd.session import Session
 
+if TYPE_CHECKING:
+    from pybyd.car import BydCar
+
 _logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 _M = TypeVar("_M", bound=BydBaseModel)
+
+#: MQTT error codes that definitively indicate the requested data is
+#: unavailable (e.g. no GPS satellite fix).  When received via MQTT with a
+#: matching serial the HTTP-poll fallback is skipped entirely.
+_MQTT_DATA_UNAVAILABLE_CODES: frozenset[str] = frozenset({"6051"})
 
 
 @dataclass(slots=True)
@@ -62,15 +74,21 @@ class _MqttWaiter:
     """A pending MQTT wait registered by a client method.
 
     Matching rules: every non-None field must match the incoming event.
-    ``serial`` is matched against a derived request serial which usually
-    comes from ``respondData.requestSerial`` but for some event types
-    (notably ``remoteControl``) is carried as ``data.uuid``.
+    Correlation is strict on VIN + ``requestSerial`` only.
     """
 
     vin: str
     future: asyncio.Future[dict[str, Any]]
     event_type: str | None = None
     serial: str | None = None
+    created_at: float = field(default_factory=time.monotonic)
+
+
+@dataclass(slots=True)
+class _PendingCommand:
+    """A pending remote command awaiting deterministic ACK match."""
+
+    command: str
     created_at: float = field(default_factory=time.monotonic)
 
 
@@ -89,8 +107,6 @@ class BydClient:
             vehicles = await client.get_vehicles()
     """
 
-    _REMOTE_CONTROL_OPPORTUNISTIC_WINDOW_S: float = 2.0
-
     def __init__(
         self,
         config: BydConfig,
@@ -98,7 +114,9 @@ class BydClient:
         session: aiohttp.ClientSession | None = None,
         on_vehicle_info: Callable[[str, VehicleRealtimeData], None] | None = None,
         on_mqtt_event: Callable[[str, str, dict[str, Any]], None] | None = None,
-        on_command_ack: Callable[[str, str, dict[str, Any]], None] | None = None,
+        on_command_ack: Callable[[CommandAckEvent], None] | None = None,
+        on_command_lifecycle: Callable[[CommandLifecycleEvent], None] | None = None,
+        command_ack_ttl_seconds: float = 300.0,
     ) -> None:
         self._config = config
         self._external_session = session is not None
@@ -113,9 +131,17 @@ class BydClient:
         self._on_vehicle_info = on_vehicle_info
         self._on_mqtt_event_cb = on_mqtt_event
         self._on_command_ack_cb = on_command_ack
+        self._on_command_lifecycle_cb = on_command_lifecycle
+        self._command_ack_ttl_seconds = command_ack_ttl_seconds if command_ack_ttl_seconds > 0 else 300.0
+        self._pending_commands: dict[tuple[str, str], _PendingCommand] = {}
+        self._pending_matched_count = 0
+        self._pending_expired_count = 0
+        self._pending_uncorrelated_count = 0
         # Serials from _trigger_and_poll (data polls like GPS/realtime).
         # Used to distinguish data-poll MQTT acks from remote-control command acks.
         self._data_poll_serials: set[str] = set()
+        # Per-VIN BydCar instances for domain-level state management.
+        self._cars: dict[str, BydCar] = {}
 
     # ------------------------------------------------------------------
     # Context manager lifecycle
@@ -153,6 +179,10 @@ class BydClient:
         Called automatically by ``async with BydClient(...)``, but can
         also be invoked directly when the lifecycle is managed manually.
         """
+        # Close all managed BydCar instances
+        for car in self._cars.values():
+            car.close()
+        self._cars.clear()
         self._stop_mqtt()
         if not self._external_session and self._http_session is not None:
             await self._http_session.close()
@@ -223,6 +253,99 @@ class BydClient:
         if not resolved:
             raise ValueError("No control PIN available (set config.control_pin or pass command_pwd)")
         return resolved
+
+    def _emit_command_lifecycle(
+        self,
+        *,
+        status: CommandLifecycleStatus,
+        vin: str,
+        request_serial: str | None,
+        command: str | None,
+        ack: CommandAckEvent | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Emit a lifecycle event to the optional callback."""
+        cb = self._on_command_lifecycle_cb
+        if cb is None:
+            return
+        try:
+            event = CommandLifecycleEvent.model_validate(
+                {
+                    "status": status,
+                    "vin": vin,
+                    "requestSerial": request_serial,
+                    "command": command,
+                    "timestamp": _now_ms(),
+                    "ack": ack,
+                    "reason": reason,
+                }
+            )
+            loop = self._loop
+
+            def _invoke() -> None:
+                try:
+                    cb(event)
+                except Exception:
+                    _logger.debug("on_command_lifecycle callback failed", exc_info=True)
+
+            if loop is not None and loop.is_running():
+                loop.call_soon(_invoke)
+            else:
+                _invoke()
+        except Exception:
+            _logger.debug("on_command_lifecycle callback failed", exc_info=True)
+
+    def _expire_pending_commands(self) -> int:
+        """Expire stale pending command entries and emit lifecycle events."""
+        now = time.monotonic()
+        expired_keys = [
+            key
+            for key, pending in self._pending_commands.items()
+            if (now - pending.created_at) >= self._command_ack_ttl_seconds
+        ]
+
+        for vin, serial in expired_keys:
+            pending = self._pending_commands.pop((vin, serial), None)
+            if pending is None:
+                continue
+            self._pending_expired_count += 1
+            self._emit_command_lifecycle(
+                status=CommandLifecycleStatus.EXPIRED,
+                vin=vin,
+                request_serial=serial,
+                command=pending.command,
+                reason="pending_ttl_exceeded",
+            )
+
+        return len(expired_keys)
+
+    def _register_pending_command(self, vin: str, request_serial: str, command: str) -> None:
+        """Register a pending command keyed by (vin, request_serial)."""
+        self._expire_pending_commands()
+        self._pending_commands[(vin, request_serial)] = _PendingCommand(command=command)
+        self._emit_command_lifecycle(
+            status=CommandLifecycleStatus.REGISTERED,
+            vin=vin,
+            request_serial=request_serial,
+            command=command,
+        )
+
+    def get_command_ack_diagnostics(self) -> CommandAckDiagnostics:
+        """Return a snapshot of command ACK correlation diagnostics."""
+        self._expire_pending_commands()
+        pending_by_vin: dict[str, int] = {}
+        for vin, _serial in self._pending_commands:
+            pending_by_vin[vin] = pending_by_vin.get(vin, 0) + 1
+
+        return CommandAckDiagnostics.model_validate(
+            {
+                "pending": len(self._pending_commands),
+                "matched": self._pending_matched_count,
+                "expired": self._pending_expired_count,
+                "uncorrelated": self._pending_uncorrelated_count,
+                "pending_by_vin": pending_by_vin,
+            }
+        )
 
     async def _call_with_reauth(self, fn: Callable[[], Awaitable[T]]) -> T:
         """Run an API call, retrying once on session expiry."""
@@ -328,23 +451,22 @@ class BydClient:
         respond_data_raw = data.get("respondData") if isinstance(data, dict) else event.payload
 
         if not isinstance(respond_data_raw, dict):
-            return
+            # Error payloads (e.g. code 6051 "no GPS") carry no respondData.
+            # Fall back to the data envelope so MQTT waiters still get resolved.
+            if isinstance(data, dict) and "code" in data:
+                respond_data_raw = data
+            else:
+                return
 
         # Normalise to a standalone dict (avoid mutating the original payload)
         respond_data: dict[str, Any] = dict(respond_data_raw)
 
-        # Derive correlation serial used by _mqtt_wait.
-        # Most events include respondData.requestSerial, but remoteControl often uses data.uuid.
+        # Derive strict requestSerial used by _mqtt_wait from data.uuid.
         serial: str | None = None
-        serial_value = respond_data.get("requestSerial")
-        if isinstance(serial_value, str) and serial_value:
-            serial = serial_value
-        elif isinstance(data, dict):
-            for key in ("requestSerial", "uuid"):
-                candidate = data.get(key)
-                if isinstance(candidate, str) and candidate:
-                    serial = candidate
-                    break
+        if isinstance(data, dict):
+            uuid_value = data.get("uuid")
+            if isinstance(uuid_value, str) and uuid_value:
+                serial = uuid_value
 
         if serial:
             respond_data.setdefault("requestSerial", serial)
@@ -356,13 +478,52 @@ class BydClient:
             except Exception:
                 _logger.debug("on_mqtt_event callback failed", exc_info=True)
 
-        # --- 2) vehicleInfo callback for on_vehicle_info ---
-        if event.event == "vehicleInfo" and event.vin and self._on_vehicle_info is not None:
+        # --- 2) vehicleInfo callback for on_vehicle_info + BydCar routing ---
+        if event.event == "vehicleInfo" and event.vin:
+            realtime_parsed: VehicleRealtimeData | None = None
             try:
-                realtime = VehicleRealtimeData.model_validate(respond_data)
-                self._on_vehicle_info(event.vin, realtime)
+                realtime_parsed = VehicleRealtimeData.model_validate(respond_data)
             except Exception:
                 _logger.debug("Failed to parse MQTT vehicleInfo", exc_info=True)
+
+            if realtime_parsed is not None:
+                # Fire user callback
+                if self._on_vehicle_info is not None:
+                    try:
+                        self._on_vehicle_info(event.vin, realtime_parsed)
+                    except Exception:
+                        _logger.debug("on_vehicle_info callback failed", exc_info=True)
+
+                # Route to BydCar instance (through guard window)
+                car = self._cars.get(event.vin)
+                if car is not None:
+                    car.handle_mqtt_realtime(realtime_parsed)
+
+        # --- 2b) smartCharge callback — route to BydCar ---
+        if event.event == "smartCharge" and event.vin:
+            charging_parsed: ChargingStatus | None = None
+            try:
+                charging_parsed = ChargingStatus.model_validate(respond_data)
+            except Exception:
+                _logger.debug("Failed to parse MQTT smartCharge", exc_info=True)
+
+            if charging_parsed is not None:
+                car = self._cars.get(event.vin)
+                if car is not None:
+                    car.handle_mqtt_charging(charging_parsed)
+
+        # --- 2c) energyConsumption callback — route to BydCar ---
+        if event.event == "energyConsumption" and event.vin:
+            energy_parsed: EnergyConsumption | None = None
+            try:
+                energy_parsed = EnergyConsumption.model_validate(respond_data)
+            except Exception:
+                _logger.debug("Failed to parse MQTT energyConsumption", exc_info=True)
+
+            if energy_parsed is not None:
+                car = self._cars.get(event.vin)
+                if car is not None:
+                    car.handle_mqtt_energy(energy_parsed)
 
         # --- 3) Dispatch to generic MQTT waiters ---
         serial_value = respond_data.get("requestSerial")
@@ -370,8 +531,6 @@ class BydClient:
 
         matched: list[_MqttWaiter] = []
         remaining: list[_MqttWaiter] = []
-        opportunistic_used = False
-        now = time.monotonic()
         for w in self._mqtt_waiters:
             if w.future.done():
                 remaining.append(w)
@@ -385,22 +544,8 @@ class BydClient:
                 remaining.append(w)
                 continue
 
-            # Normal case: strict correlation on requestSerial.
             if w.serial is None or w.serial == serial:
                 matched.append(w)
-                continue
-
-            # Opportunistic fallback (remoteControl only): some MQTT payloads omit uuid/requestSerial.
-            # To avoid accidentally resolving unrelated commands, only match the oldest pending waiter
-            # within a short window, and only when the incoming event provides no serial.
-            if (
-                not opportunistic_used
-                and serial is None
-                and event.event == "remoteControl"
-                and (now - w.created_at) <= self._REMOTE_CONTROL_OPPORTUNISTIC_WINDOW_S
-            ):
-                matched.append(w)
-                opportunistic_used = True
                 continue
 
             remaining.append(w)
@@ -414,14 +559,92 @@ class BydClient:
         # does NOT belong to an in-flight data poll (GPS, realtime).  This
         # lets the integration distinguish actual command acks from data-poll
         # MQTT responses that happen to arrive as "remoteControl" events.
-        if (
-            self._on_command_ack_cb is not None
-            and event.vin
-            and event.event == "remoteControl"
-            and (serial is None or serial not in self._data_poll_serials)
-        ):
+        if event.vin and event.event == "remoteControl" and (serial is None or serial not in self._data_poll_serials):
             try:
-                self._on_command_ack_cb(event.event, event.vin, respond_data)
+                raw_uuid: str | None = None
+                if isinstance(data, dict):
+                    uuid_candidate = data.get("uuid")
+                    if isinstance(uuid_candidate, str) and uuid_candidate:
+                        raw_uuid = uuid_candidate
+
+                ack_timestamp: int | None = None
+                for key in ("time", "timestamp"):
+                    value = respond_data.get(key)
+                    if value is not None:
+                        try:
+                            ack_timestamp = int(value)
+                        except (TypeError, ValueError):
+                            ack_timestamp = None
+                        break
+
+                ack_result: str | None = None
+                for key in ("result", "message", "msg"):
+                    value = respond_data.get(key)
+                    if value is not None:
+                        ack_result = value if isinstance(value, str) else str(value)
+                        break
+
+                ack_success = RemoteControlResult.model_validate(respond_data).success
+                ack_event = CommandAckEvent.model_validate(
+                    {
+                        "vin": event.vin,
+                        "requestSerial": serial,
+                        "raw_uuid": raw_uuid,
+                        "result": ack_result,
+                        "success": ack_success,
+                        "timestamp": ack_timestamp,
+                        "raw": dict(event.payload),
+                    }
+                )
+
+                self._expire_pending_commands()
+
+                if serial is None:
+                    self._pending_uncorrelated_count += 1
+                    self._emit_command_lifecycle(
+                        status=CommandLifecycleStatus.UNCORRELATED,
+                        vin=event.vin,
+                        request_serial=None,
+                        command=None,
+                        ack=ack_event,
+                        reason="missing_request_serial",
+                    )
+                else:
+                    pending = self._pending_commands.pop((event.vin, serial), None)
+                    if pending is None:
+                        self._pending_uncorrelated_count += 1
+                        self._emit_command_lifecycle(
+                            status=CommandLifecycleStatus.UNCORRELATED,
+                            vin=event.vin,
+                            request_serial=serial,
+                            command=None,
+                            ack=ack_event,
+                            reason="pending_not_found",
+                        )
+                    else:
+                        self._pending_matched_count += 1
+                        self._emit_command_lifecycle(
+                            status=CommandLifecycleStatus.MATCHED,
+                            vin=event.vin,
+                            request_serial=serial,
+                            command=pending.command,
+                            ack=ack_event,
+                        )
+
+                if self._on_command_ack_cb is not None:
+                    loop = self._loop
+                    cb = self._on_command_ack_cb
+
+                    def _invoke_ack() -> None:
+                        try:
+                            cb(ack_event)
+                        except Exception:
+                            _logger.debug("on_command_ack callback failed", exc_info=True)
+
+                    if loop is not None and loop.is_running():
+                        loop.call_soon(_invoke_ack)
+                    else:
+                        _invoke_ack()
             except Exception:
                 _logger.debug("on_command_ack callback failed", exc_info=True)
 
@@ -487,6 +710,7 @@ class BydClient:
         mqtt_timeout: float | None = None,
         poll_attempts: int = 10,
         poll_interval: float = 1.5,
+        signal_retries: int = 2,
     ) -> _M:
         """Generic trigger → MQTT wait → HTTP poll fallback.
 
@@ -501,6 +725,9 @@ class BydClient:
             Pydantic model to ``model_validate`` the final dict.
         label
             Human-readable label for debug logging (e.g. ``"Realtime"``).
+        signal_retries
+            Maximum consecutive ``BydDataUnavailableError`` responses before
+            giving up early (vehicle likely has no signal). Defaults to 2.
         """
         session = await self.ensure_session()
         transport = self._require_transport()
@@ -537,8 +764,23 @@ class BydClient:
                 _logger.debug("%s data received via MQTT for vin=%s", label, vin)
                 return model_cls.model_validate(mqtt_raw)
 
+            # Check if MQTT delivered a definitive "data unavailable" error
+            # (e.g. code 6051 = no GPS signal).  Skip HTTP polling entirely.
+            if isinstance(mqtt_raw, dict):
+                mqtt_code = mqtt_raw.get("code")
+                if isinstance(mqtt_code, str) and mqtt_code in _MQTT_DATA_UNAVAILABLE_CODES:
+                    _logger.debug(
+                        "%s unavailable via MQTT (code=%s) for vin=%s; "
+                        "skipping HTTP poll, falling back to last known data",
+                        label,
+                        mqtt_code,
+                        vin,
+                    )
+                    return model_cls.model_validate(merged_latest)
+
             # Phase 3: HTTP poll fallback
             _logger.debug("MQTT timeout; falling back to HTTP polling for %s vin=%s", label, vin)
+            consecutive_unavailable = 0
             for attempt in range(1, poll_attempts + 1):
                 if poll_interval > 0:
                     await asyncio.sleep(poll_interval)
@@ -551,6 +793,7 @@ class BydClient:
                         vin,
                         serial,
                     )
+                    consecutive_unavailable = 0  # reset on success
                     if isinstance(latest, dict):
                         merged_latest = latest
                     if isinstance(latest, dict) and is_ready(latest):
@@ -558,7 +801,25 @@ class BydClient:
                         break
                 except BydSessionExpiredError:
                     raise
+                except BydDataUnavailableError:
+                    consecutive_unavailable += 1
+                    _logger.debug(
+                        "%s data unavailable (attempt=%d/%d) — vehicle may lack signal",
+                        label,
+                        attempt,
+                        poll_attempts,
+                    )
+                    if consecutive_unavailable >= signal_retries:
+                        _logger.debug(
+                            "%s giving up after %d consecutive signal failures for vin=%s; "
+                            "falling back to last known data",
+                            label,
+                            consecutive_unavailable,
+                            vin,
+                        )
+                        break
                 except Exception:
+                    consecutive_unavailable = 0  # reset — different error type
                     _logger.debug("%s poll attempt=%d failed", label, attempt, exc_info=True)
 
             return model_cls.model_validate(merged_latest)
@@ -569,6 +830,66 @@ class BydClient:
         """Fetch all vehicles associated with the account."""
         return await self._authed_call(_vehicle_api.fetch_vehicle_list)
 
+    async def get_car(
+        self,
+        vin: str,
+        *,
+        vehicle: Vehicle | None = None,
+        on_state_changed: Callable[[str, Any], None] | None = None,
+        projection_ttl: float = 30.0,
+    ) -> BydCar:
+        """Obtain a :class:`BydCar` aggregate for the given VIN.
+
+        Returns a cached instance if one already exists.  Otherwise
+        fetches vehicle metadata (unless *vehicle* is provided) and
+        creates a new :class:`BydCar` with capability namespaces and
+        an internal state engine.
+
+        Parameters
+        ----------
+        vin
+            Vehicle identification number.
+        vehicle
+            Optional pre-fetched :class:`Vehicle` model.  If ``None``,
+            the vehicle list is fetched to find the matching VIN.
+        on_state_changed
+            Optional callback ``(vin, VehicleSnapshot) -> None`` fired
+            on every accepted state mutation.
+        projection_ttl
+            Default TTL for command projections (seconds).
+
+        Returns
+        -------
+        BydCar
+            Per-vehicle aggregate with typed capability namespaces.
+
+        Raises
+        ------
+        BydError
+            If the VIN is not found in the account's vehicle list.
+        """
+        from pybyd.car import BydCar  # delayed import to avoid circular dependency
+
+        existing = self._cars.get(vin)
+        if existing is not None:
+            return existing
+
+        if vehicle is None:
+            vehicles = await self.get_vehicles()
+            vehicle = next((v for v in vehicles if v.vin == vin), None)
+            if vehicle is None:
+                raise BydError(f"Vehicle {vin} not found in account")
+
+        car = BydCar(
+            self,
+            vin,
+            vehicle,
+            on_state_changed=on_state_changed,
+            projection_ttl=projection_ttl,
+        )
+        self._cars[vin] = car
+        return car
+
     async def get_vehicle_realtime(
         self,
         vin: str,
@@ -576,6 +897,7 @@ class BydClient:
         poll_attempts: int = 10,
         poll_interval: float = 1.5,
         mqtt_timeout: float | None = None,
+        signal_retries: int = 2,
     ) -> VehicleRealtimeData:
         """Trigger + wait for realtime vehicle data.
 
@@ -597,6 +919,7 @@ class BydClient:
                 mqtt_timeout=mqtt_timeout,
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
+                signal_retries=signal_retries,
             )
 
         return await self._call_with_reauth(_call)
@@ -608,6 +931,7 @@ class BydClient:
         poll_attempts: int = 10,
         poll_interval: float = 1.5,
         mqtt_timeout: float | None = None,
+        signal_retries: int = 2,
     ) -> GpsInfo:
         """Trigger + wait for GPS info.
 
@@ -628,6 +952,7 @@ class BydClient:
                 mqtt_timeout=mqtt_timeout,
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
+                signal_retries=signal_retries,
             )
 
         return await self._call_with_reauth(_call)
@@ -691,6 +1016,7 @@ class BydClient:
             raw = await self._mqtt_wait(vin, event_type="remoteControl", serial=serial)
             if raw is None:
                 return None
+            raw.setdefault("requestSerial", serial)
             return RemoteControlResult.model_validate(raw)
 
         async def _call() -> RemoteControlResult:
@@ -707,6 +1033,9 @@ class BydClient:
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
                 mqtt_result_waiter=_mqtt_result_waiter,
+                on_trigger_dispatched=lambda serial: (
+                    self._register_pending_command(vin, serial, command.value) if serial else None
+                ),
             )
 
         return await self._call_with_reauth(_call)

@@ -1,7 +1,4 @@
-"""PKCS#7 padding for the Bangcle white-box AES layer.
-
-Ports addPkcs7 and stripPkcs7 from bangcle.js.
-"""
+"""PKCS#7 padding for the Bangcle white-box AES layer."""
 
 from __future__ import annotations
 

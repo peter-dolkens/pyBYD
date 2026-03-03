@@ -25,12 +25,7 @@ if TYPE_CHECKING:
 
 
 class RemoteCommand(enum.StrEnum):
-    """Remote control ``commandType`` values.
-
-    Each value corresponds to the ``commandType`` string sent to
-    ``/control/remoteControl`` on the BYD API, as confirmed by
-    Niek (BYD-re) and TA2k's APK analysis.
-    """
+    """Remote control ``commandType`` values."""
 
     LOCK = "LOCKDOOR"
     UNLOCK = "OPENDOOR"
@@ -120,6 +115,134 @@ class CommandAck(BydBaseModel):
         if r is not None and not isinstance(r, str):
             values = {**values, "result": None}
         return values
+
+
+class CommandAckEvent(BydBaseModel):
+    """Structured MQTT remote-control acknowledgement event.
+
+    ``request_serial`` is the only deterministic correlation key and may be
+    ``None`` for diagnostics-only (uncorrelated) MQTT events.
+    """
+
+    vin: str = ""
+    request_serial: str | None = Field(default=None, validation_alias="requestSerial")
+    raw_uuid: str | None = None
+    result: str | None = None
+    success: bool = False
+    timestamp: int | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def is_correlated(self) -> bool:
+        """Return ``True`` when this event can be matched deterministically."""
+        return bool(self.vin and self.request_serial)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_shape(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+
+        merged = dict(values)
+        serial = merged.get("requestSerial") or merged.get("request_serial")
+        if serial is not None and not isinstance(serial, str):
+            serial = None
+
+        raw = merged.get("raw")
+        if not isinstance(raw, dict):
+            raw = {}
+
+        raw_uuid = merged.get("raw_uuid")
+        if raw_uuid is not None and not isinstance(raw_uuid, str):
+            raw_uuid = None
+
+        timestamp = merged.get("timestamp")
+        if timestamp is not None and not isinstance(timestamp, int):
+            try:
+                timestamp = int(timestamp)
+            except (TypeError, ValueError):
+                timestamp = None
+
+        result = merged.get("result")
+        if result is not None and not isinstance(result, str):
+            result = str(result)
+
+        success = merged.get("success")
+        if not isinstance(success, bool):
+            success = False
+
+        merged["requestSerial"] = serial
+        merged["raw_uuid"] = raw_uuid
+        merged["timestamp"] = timestamp
+        merged["result"] = result
+        merged["success"] = success
+        merged["raw"] = raw
+        return merged
+
+
+class CommandLifecycleStatus(enum.StrEnum):
+    """Lifecycle state for deterministic command ACK correlation."""
+
+    REGISTERED = "registered"
+    MATCHED = "matched"
+    EXPIRED = "expired"
+    UNCORRELATED = "uncorrelated"
+
+
+class CommandLifecycleEvent(BydBaseModel):
+    """Lifecycle event emitted by the client command ACK registry."""
+
+    status: CommandLifecycleStatus
+    vin: str = ""
+    request_serial: str | None = Field(default=None, validation_alias="requestSerial")
+    command: str | None = None
+    timestamp: int
+    ack: CommandAckEvent | None = None
+    reason: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_shape(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+
+        merged = dict(values)
+        serial = merged.get("requestSerial") or merged.get("request_serial")
+        if serial is not None and not isinstance(serial, str):
+            serial = None
+
+        command = merged.get("command")
+        if command is not None and not isinstance(command, str):
+            command = str(command)
+
+        timestamp = merged.get("timestamp")
+        if timestamp is None:
+            timestamp = 0
+        elif not isinstance(timestamp, int):
+            try:
+                timestamp = int(timestamp)
+            except (TypeError, ValueError):
+                timestamp = 0
+
+        reason = merged.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            reason = str(reason)
+
+        merged["requestSerial"] = serial
+        merged["command"] = command
+        merged["timestamp"] = timestamp
+        merged["reason"] = reason
+        return merged
+
+
+class CommandAckDiagnostics(BydBaseModel):
+    """Snapshot counters for command ACK registry diagnostics."""
+
+    pending: int = 0
+    matched: int = 0
+    expired: int = 0
+    uncorrelated: int = 0
+    pending_by_vin: dict[str, int] = Field(default_factory=dict)
 
 
 class VerifyControlPasswordResponse(BydBaseModel):

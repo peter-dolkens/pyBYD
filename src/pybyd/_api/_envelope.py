@@ -1,7 +1,4 @@
-"""Shared envelope building for token-authenticated requests.
-
-Ports buildTokenOuterEnvelope from client.js lines 288-315.
-"""
+"""Shared envelope building for token-authenticated requests."""
 
 from __future__ import annotations
 

@@ -1,7 +1,4 @@
-"""Standard AES-128-CBC encryption for BYD inner payloads.
-
-Ports aesEncryptHex and aesDecryptUtf8 from client.js.
-"""
+"""Standard AES-128-CBC encryption for BYD inner payloads."""
 
 from __future__ import annotations
 

@@ -160,6 +160,69 @@ MQTT-related configuration:
 - `mqtt_keepalive` / `BYD_MQTT_KEEPALIVE` (default: 120)
 - `mqtt_timeout` / `BYD_MQTT_TIMEOUT` (default: 10.0)
 
+### Breaking: `on_command_ack` callback contract
+
+`BydClient(..., on_command_ack=...)` now delivers a single structured
+`CommandAckEvent` object only.
+
+```python
+from pybyd import BydClient, BydConfig, CommandAckEvent
+
+def on_command_ack(event: CommandAckEvent) -> None:
+    # Deterministic correlation key
+    print(event.vin, event.request_serial, event.is_correlated)
+    # Diagnostics
+    print(event.raw_uuid, event.result, event.success, event.timestamp)
+
+client = BydClient(config, on_command_ack=on_command_ack)
+```
+
+Correlation is strict by `(vin, request_serial)` only. Events without
+`request_serial` are diagnostics-only and must not be used for deterministic
+command matching.
+
+### Command lifecycle ownership (pending/match/expiry)
+
+pyBYD owns the full remote-command ACK lifecycle registry:
+
+- pending registration at trigger dispatch (`requestSerial` present)
+- strict match by `(vin, request_serial)` only
+- TTL-based expiry of unmatched pending entries
+- diagnostics-only uncorrelated events (including serial-less ACKs)
+
+Use `on_command_lifecycle` to consume lifecycle transitions:
+
+```python
+from pybyd import (
+    BydClient,
+    BydConfig,
+    CommandLifecycleEvent,
+    CommandLifecycleStatus,
+)
+
+def on_command_lifecycle(event: CommandLifecycleEvent) -> None:
+    if event.status == CommandLifecycleStatus.MATCHED:
+        print("matched", event.vin, event.request_serial, event.command)
+    elif event.status == CommandLifecycleStatus.UNCORRELATED:
+        print("uncorrelated", event.reason, event.request_serial)
+
+client = BydClient(
+    BydConfig.from_env(),
+    on_command_lifecycle=on_command_lifecycle,
+    command_ack_ttl_seconds=300.0,
+)
+
+diagnostics = client.get_command_ack_diagnostics()
+print(diagnostics.pending, diagnostics.matched, diagnostics.expired, diagnostics.uncorrelated)
+```
+
+Lifecycle status values are:
+
+- `registered`
+- `matched`
+- `expired`
+- `uncorrelated`
+
 `verify_control_password(...)` is available as an explicit helper call,
 but remote commands are sent directly with `commandPwd` and rely on API
 responses for success/failure.
@@ -214,6 +277,24 @@ python scripts/data_diff.py --vin X    # target a specific VIN
 python scripts/dump_all.py             # human-readable
 python scripts/dump_all.py --json -o dump.json
 python scripts/dump_all.py --skip-gps --skip-energy
+```
+
+### `generate_api_mapping_tables.py` — GitHub issue mapping tables
+
+Polls data endpoints and builds one markdown table per endpoint with:
+
+- raw API key
+- raw current value
+- parsed value in pyBYD
+
+Enum-mapped fields include the full enum domain in line-shifted rows
+inside the same table cell, to make verification easy during mapping
+collaboration.
+
+```bash
+python scripts/generate_api_mapping_tables.py
+python scripts/generate_api_mapping_tables.py --vin X --output api-mapping-live.md
+python scripts/generate_api_mapping_tables.py --skip-push
 ```
 
 ### `mqtt_probe.py` — passive MQTT watcher

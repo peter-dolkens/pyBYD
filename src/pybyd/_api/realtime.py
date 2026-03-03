@@ -15,9 +15,6 @@ from pybyd._transport import Transport
 from pybyd.config import BydConfig
 from pybyd.session import Session
 
-_TRIGGER_ENDPOINT = "/vehicleInfo/vehicle/vehicleRealTimeRequest"
-_POLL_ENDPOINT = "/vehicleInfo/vehicle/vehicleRealTimeResult"
-
 
 async def fetch_realtime_endpoint(
     endpoint: str,

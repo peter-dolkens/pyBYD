@@ -1,8 +1,5 @@
 """White-box AES block cipher and CBC mode for Bangcle envelopes.
 
-Faithful port of bangcle.js: decryptBlockAuth, encryptBlockAuth,
-decryptCbc, encryptCbc.
-
 The cipher uses pre-computed lookup tables extracted from
 libencrypt.so rather than a standard AES key schedule.
 """

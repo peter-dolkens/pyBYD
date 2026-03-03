@@ -1,7 +1,4 @@
-"""Hash functions for BYD API signing and verification.
-
-Ports md5Hex, sha1Mixed, and computeCheckcode from client.js.
-"""
+"""Hash functions for BYD API signing and verification."""
 
 from __future__ import annotations
 
