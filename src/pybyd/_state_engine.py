@@ -38,6 +38,14 @@ _logger = logging.getLogger(__name__)
 # Sentinel for missing attributes
 _MISSING: object = object()
 
+_LOCK_FIELD_NAMES: tuple[str, ...] = (
+    "left_front_door_lock",
+    "right_front_door_lock",
+    "left_rear_door_lock",
+    "right_rear_door_lock",
+    "sliding_door_lock",
+)
+
 
 # ------------------------------------------------------------------
 # Immutable snapshot
@@ -270,6 +278,15 @@ class VehicleStateEngine:
         if previous is None:
             return incoming
         updates: dict[str, Any] = {}
+
+        incoming_fields = incoming.model_fields_set
+        for field_name in _LOCK_FIELD_NAMES:
+            if field_name in incoming_fields:
+                continue
+            previous_value = getattr(previous, field_name, _MISSING)
+            if previous_value is not _MISSING:
+                updates[field_name] = previous_value
+
         guarded_soc = keep_previous_when_zero(previous.elec_percent, incoming.elec_percent)
         if guarded_soc != incoming.elec_percent:
             updates["elec_percent"] = guarded_soc
