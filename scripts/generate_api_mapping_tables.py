@@ -2,7 +2,12 @@
 """Generate GitHub-friendly markdown tables from live BYD endpoint data.
 
 The script logs in via pyBYD, polls each data endpoint for a VIN, and emits
-one markdown table per endpoint with:
+two markdown tables per endpoint:
+
+- Mapped rows (raw keys that pyBYD parses, plus latest-config normalized rows)
+- Unmapped rows (raw keys not parsed by pyBYD)
+
+Each table contains:
 
 - Raw API key
 - Raw current value
@@ -51,6 +56,12 @@ if _src.is_dir():
 from pybyd import BydClient, BydConfig  # noqa: E402
 from pybyd.exceptions import BydApiError, BydTransportError  # noqa: E402
 from pybyd.models._base import BydEnum  # noqa: E402
+from pybyd.models.command_gating import evaluate_all_command_gates  # noqa: E402
+from pybyd.models.latest_config import (  # noqa: E402
+    VehicleCapabilities,
+    VehicleLatestConfig,
+    registered_latest_config_function_nos,
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,7 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     EndpointSpec("hvac", "HVAC"),
     EndpointSpec("charging", "Charging"),
     EndpointSpec("energy", "Energy"),
+    EndpointSpec("latest_config", "Latest Config"),
     EndpointSpec("push", "Push Notifications"),
 )
 
@@ -202,7 +214,7 @@ def _build_field_maps(model_obj: BaseModel) -> tuple[dict[str, str], dict[str, t
 
     model_fields = type(model_obj).model_fields
     for field_name, field_info in model_fields.items():
-        if field_name == "raw":
+        if field_name in {"raw", "vin"}:
             continue
 
         aliases: set[str] = {to_camel(field_name)}
@@ -288,8 +300,91 @@ def _format_endpoint_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {sanitized_message}"
 
 
-def _endpoint_table(endpoint: EndpointSpec, model_obj: BaseModel) -> str:
-    """Render one endpoint section and markdown table."""
+def _latest_config_capabilities(model_obj: BaseModel, vin: str | None) -> VehicleCapabilities | None:
+    """Return normalized capabilities for latest-config views when possible."""
+    if isinstance(model_obj, VehicleCapabilities):
+        return model_obj
+    if isinstance(model_obj, VehicleLatestConfig) and vin is not None:
+        return VehicleCapabilities.from_latest_config(vin, model_obj)
+    return None
+
+
+def _latest_config_normalized_rows(model_obj: BaseModel, vin: str | None) -> list[tuple[str, Any, str]]:
+    """Build synthetic normalized capability rows for latest-config endpoint output."""
+    capabilities = _latest_config_capabilities(model_obj, vin)
+    if capabilities is None:
+        return []
+
+    rows: list[tuple[str, Any, str]] = []
+    for field_name in type(capabilities).model_fields:
+        if field_name in {"raw", "vin"}:
+            continue
+        raw_key = f"__normalized.{field_name}__"
+        raw_value = _redact_value(raw_key, getattr(capabilities, field_name))
+        parsed_text = f"{_json_value(raw_value)} → {field_name} ({_field_type_label(capabilities, field_name)})"
+        rows.append((raw_key, raw_value, parsed_text))
+
+    registered_function_nos = registered_latest_config_function_nos()
+    for function_no in capabilities.function_nos:
+        is_registered = function_no in registered_function_nos
+        raw_key = f"__function_no.{function_no}__"
+        raw_value = {
+            "functionNo": function_no,
+            "registered": is_registered,
+        }
+        parsed_text = f"{is_registered} → function_no_registered ({function_no})"
+        rows.append((raw_key, raw_value, parsed_text))
+
+    for verdict in evaluate_all_command_gates(capabilities):
+        raw_key = f"__command_gate.{verdict.command.value}.{verdict.gate_id}__"
+        raw_value = {
+            "command": verdict.command.value,
+            "gateId": verdict.gate_id,
+            "supported": verdict.supported,
+            "reason": verdict.reason,
+            "matchedFunctionNos": verdict.matched_function_nos,
+            "counterpartFunctionNos": verdict.counterpart_function_nos,
+        }
+        parsed_text = (
+            f"{verdict.supported} → command_gate "
+            f"(reason={verdict.reason}; "
+            f"matched_function_nos={verdict.matched_function_nos}; "
+            f"counterpart_function_nos={verdict.counterpart_function_nos})"
+        )
+        rows.append((raw_key, raw_value, parsed_text))
+
+    return rows
+
+
+def _render_table_block(lines: list[str], title: str, rows: list[tuple[str, Any, str]]) -> None:
+    """Append a titled markdown table block to *lines*."""
+    lines.extend(
+        [
+            f"### {title}",
+            "",
+            "| Raw API key | Raw current value | Parsed in pyBYD |",
+            "|---|---:|---|",
+        ]
+    )
+
+    if not rows:
+        lines.append("| _(no rows)_ |  |  |")
+        lines.append("")
+        return
+
+    for raw_key, raw_value, parsed_text in rows:
+        lines.append(
+            "| "
+            f"{_escape_cell(raw_key)} | "
+            f"{_escape_cell(_json_value(raw_value))} | "
+            f"{_escape_cell(parsed_text)} |"
+        )
+
+    lines.append("")
+
+
+def _endpoint_table(endpoint: EndpointSpec, model_obj: BaseModel, *, vin: str | None = None) -> str:
+    """Render one endpoint section and markdown tables."""
     raw_obj = getattr(model_obj, "raw", {})
     raw_dict: dict[str, Any] = raw_obj if isinstance(raw_obj, dict) else {}
     flat_raw = _flatten_json(raw_dict)
@@ -300,14 +395,10 @@ def _endpoint_table(endpoint: EndpointSpec, model_obj: BaseModel) -> str:
     lines: list[str] = [
         f"## {endpoint.title}",
         "",
-        "| Raw API key | Raw current value | Parsed in pyBYD |",
-        "|---|---:|---|",
     ]
 
-    if not flat_raw:
-        lines.append("| _(no raw data returned)_ |  |  |")
-        lines.append("")
-        return "\n".join(lines)
+    mapped_rows: list[tuple[str, Any, str]] = []
+    unmapped_rows: list[tuple[str, Any, str]] = []
 
     for raw_key in sorted(flat_raw.keys()):
         is_sensitive = _is_sensitive_key(raw_key)
@@ -319,6 +410,7 @@ def _endpoint_table(endpoint: EndpointSpec, model_obj: BaseModel) -> str:
                 parsed_text = "<REDACTED> → Not parsed (raw only)"
             else:
                 parsed_text = "Not parsed (raw only)"
+            unmapped_rows.append((raw_key, raw_value, parsed_text))
         else:
             if endpoint.key == "gps" and is_sensitive:
                 parsed_text = f"<REDACTED> → {field_name} ({_field_type_label(model_obj, field_name)})"
@@ -326,15 +418,14 @@ def _endpoint_table(endpoint: EndpointSpec, model_obj: BaseModel) -> str:
                 parsed_value = _redact_value(field_name, getattr(model_obj, field_name))
                 enum_cls = field_to_enum.get(field_name)
                 parsed_text = _parsed_cell(raw_value, parsed_value, enum_cls)
+            mapped_rows.append((raw_key, raw_value, parsed_text))
 
-        lines.append(
-            "| "
-            f"{_escape_cell(raw_key)} | "
-            f"{_escape_cell(_json_value(raw_value))} | "
-            f"{_escape_cell(parsed_text)} |"
-        )
+    if endpoint.key == "latest_config":
+        mapped_rows.extend(_latest_config_normalized_rows(model_obj, vin))
 
-    lines.append("")
+    _render_table_block(lines, "Mapped", mapped_rows)
+    _render_table_block(lines, "Unmapped", unmapped_rows)
+
     return "\n".join(lines)
 
 
@@ -350,6 +441,8 @@ async def _fetch_endpoint(client: BydClient, endpoint_key: str, vin: str) -> Bas
         return await client.get_charging_status(vin)
     if endpoint_key == "energy":
         return await client.get_energy_consumption(vin)
+    if endpoint_key == "latest_config":
+        return await client.get_latest_config(vin)
     if endpoint_key == "push":
         return await client.get_push_state(vin)
     raise ValueError(f"Unsupported endpoint key: {endpoint_key}")
@@ -390,7 +483,7 @@ async def _generate_markdown(vin: str | None, *, include_push: bool) -> str:
                 lines.append("")
                 continue
 
-            lines.append(_endpoint_table(spec, model_obj))
+            lines.append(_endpoint_table(spec, model_obj, vin=selected_vin))
 
     return "\n".join(lines).rstrip() + "\n"
 

@@ -40,6 +40,7 @@ class AirConditioningMode(BydEnum):
     """A/C control mode."""
 
     UNKNOWN = -1
+    OFF = 0
     AUTO = 1
     MANUAL = 2
 
@@ -48,6 +49,7 @@ class HvacWindMode(BydEnum):
     """Fan mode / airflow direction."""
 
     UNKNOWN = -1
+    OFF = 0
     FACE = 1
     FACE_FOOT = 2
     FOOT = 3

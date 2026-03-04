@@ -23,6 +23,7 @@ Options::
     --skip-charging      Skip charging status endpoint
     --skip-hvac          Skip HVAC status endpoint
     --skip-realtime      Skip realtime endpoint
+    --skip-latest-config Skip latest capability-config endpoint
 """
 
 from __future__ import annotations
@@ -192,6 +193,19 @@ async def dump_vehicle(
             out.append(msg)
             vehicle_data["hvac"] = {"error": str(exc), "traceback": traceback.format_exc()}
 
+    # ── Latest Config ──
+    if "latest_config" not in skip:
+        out.append(_section(f"LATEST CONFIG  vin={vin}"))
+        try:
+            latest_config = await client.get_latest_config(vin)
+            d = _print_model("Latest config (parsed)", latest_config, out)
+            _print_raw("Latest config", latest_config.raw, out)
+            vehicle_data["latest_config"] = {"parsed": d, "raw": latest_config.raw}
+        except Exception as exc:
+            msg = f"  !! latest_config failed: {exc}"
+            out.append(msg)
+            vehicle_data["latest_config"] = {"error": str(exc), "traceback": traceback.format_exc()}
+
     if not json_mode:
         print("\n".join(out))
 
@@ -210,6 +224,7 @@ async def main() -> None:
     parser.add_argument("--skip-charging", action="store_true", help="Skip charging status endpoint")
     parser.add_argument("--skip-hvac", action="store_true", help="Skip HVAC status endpoint")
     parser.add_argument("--skip-realtime", action="store_true", help="Skip realtime endpoint")
+    parser.add_argument("--skip-latest-config", action="store_true", help="Skip latest capability-config endpoint")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -229,6 +244,8 @@ async def main() -> None:
         skip.add("hvac")
     if args.skip_realtime:
         skip.add("realtime")
+    if args.skip_latest_config:
+        skip.add("latest_config")
 
     config = BydConfig.from_env()
     result: dict[str, Any] = {

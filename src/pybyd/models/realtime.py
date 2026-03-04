@@ -35,8 +35,8 @@ class VehicleState(BydEnum):
     """Vehicle power state."""
 
     UNKNOWN = -1
-    ON = 0
-    OFF = 2
+    OFF = 0
+    ON = 2  # not confirmed
 
 
 class ChargingState(BydEnum):

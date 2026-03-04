@@ -113,7 +113,6 @@ async def verify_control_password(
         vin=vin,
         not_supported_codes=ENDPOINT_NOT_SUPPORTED_CODES,
         extra_code_map=_CONTROL_EXTRA_CODES,
-        user_type="1",
     )
 
     raw = data if isinstance(data, dict) else {}

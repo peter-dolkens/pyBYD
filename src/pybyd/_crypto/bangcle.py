@@ -99,14 +99,7 @@ def _normalise_envelope_input(envelope: str) -> str:
 
 
 class BangcleCodec:
-    """Encode and decode Bangcle envelopes using white-box AES.
-
-    Parameters
-    ----------
-    tables_path : Path or None
-        Path to the ``bangcle_tables.bin`` file. If ``None``, the
-        library looks for the file in its own package data directory.
-    """
+    """Encode and decode Bangcle envelopes using white-box AES."""
 
     def __init__(self, tables_path: Path | None = None) -> None:
         self._tables_path = tables_path
@@ -145,18 +138,7 @@ class BangcleCodec:
         await loop.run_in_executor(None, self._load_tables)
 
     def encode_envelope(self, plaintext: str | bytes) -> str:
-        """Encode plaintext into a Bangcle envelope (``F`` + base64).
-
-        Parameters
-        ----------
-        plaintext : str or bytes
-            Data to encode. Strings are UTF-8 encoded.
-
-        Returns
-        -------
-        str
-            Envelope string starting with ``F``.
-        """
+        """Encode plaintext into a Bangcle envelope (``F`` + base64)."""
         tables = self._load_tables()
         plain_bytes = plaintext.encode("utf-8") if isinstance(plaintext, str) else plaintext
         padded = add_pkcs7(plain_bytes)
@@ -164,23 +146,7 @@ class BangcleCodec:
         return "F" + base64.b64encode(ciphertext).decode("ascii")
 
     def decode_envelope(self, envelope: str) -> bytes:
-        """Decode a Bangcle envelope back to plaintext bytes.
-
-        Parameters
-        ----------
-        envelope : str
-            Envelope string (must start with ``F``).
-
-        Returns
-        -------
-        bytes
-            Decoded plaintext.
-
-        Raises
-        ------
-        BangcleError
-            If the envelope format is invalid.
-        """
+        """Decode a Bangcle envelope back to plaintext bytes."""
         tables = self._load_tables()
         b64_payload = _normalise_envelope_input(envelope)
         try:

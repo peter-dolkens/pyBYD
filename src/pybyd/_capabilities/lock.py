@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pybyd._state_engine import ProjectionSpec
+from pybyd.exceptions import BydEndpointNotSupportedError
 from pybyd.models.realtime import LockState
 
 if TYPE_CHECKING:
@@ -21,14 +22,29 @@ class LockCapability:
         unlock_fn: Callable[..., Awaitable[Any]],
         vin: str,
         execute_command: Callable[..., Awaitable[None]],
+        available: bool | None = True,
     ) -> None:
         self._lock_fn = lock_fn
         self._unlock_fn = unlock_fn
         self._vin = vin
         self._execute = execute_command
+        self._available = available
+
+    @property
+    def available(self) -> bool:
+        return bool(self._available)
+
+    def _ensure_available(self) -> None:
+        if not self.available:
+            raise BydEndpointNotSupportedError(
+                f"Lock capability not supported for VIN {self._vin}",
+                code="capability_unsupported",
+                endpoint="lock",
+            )
 
     async def lock(self) -> None:
         """Lock all vehicle doors."""
+        self._ensure_available()
         specs = [
             ProjectionSpec("realtime", "left_front_door_lock", LockState.LOCKED),
             ProjectionSpec("realtime", "right_front_door_lock", LockState.LOCKED),
@@ -43,6 +59,7 @@ class LockCapability:
 
     async def unlock(self) -> None:
         """Unlock all vehicle doors."""
+        self._ensure_available()
         specs = [
             ProjectionSpec("realtime", "left_front_door_lock", LockState.UNLOCKED),
             ProjectionSpec("realtime", "right_front_door_lock", LockState.UNLOCKED),

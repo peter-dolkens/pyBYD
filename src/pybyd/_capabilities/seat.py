@@ -6,6 +6,7 @@ import enum
 from typing import TYPE_CHECKING, Any
 
 from pybyd._state_engine import ProjectionSpec, VehicleSnapshot
+from pybyd.exceptions import BydEndpointNotSupportedError
 from pybyd.models.control import SeatClimateParams
 from pybyd.models.hvac import HvacOverallStatus
 from pybyd.models.realtime import SeatHeatVentState
@@ -79,11 +80,30 @@ class SeatCapability:
         vin: str,
         get_state: Callable[[], VehicleSnapshot],
         execute_command: Callable[..., Awaitable[None]],
+        driver_heat_available: bool | None = True,
+        driver_ventilation_available: bool | None = True,
+        passenger_heat_available: bool | None = True,
+        passenger_ventilation_available: bool | None = True,
     ) -> None:
         self._set_seat_climate_fn = set_seat_climate_fn
         self._vin = vin
         self._get_state = get_state
         self._execute = execute_command
+        self._driver_heat_available = driver_heat_available
+        self._driver_ventilation_available = driver_ventilation_available
+        self._passenger_heat_available = passenger_heat_available
+        self._passenger_ventilation_available = passenger_ventilation_available
+
+    def _is_mode_available(self, position: SeatPosition, mode: str) -> bool:
+        if position == SeatPosition.DRIVER and mode == "heat":
+            return bool(self._driver_heat_available)
+        if position == SeatPosition.DRIVER and mode == "vent":
+            return bool(self._driver_ventilation_available)
+        if position == SeatPosition.COPILOT and mode == "heat":
+            return bool(self._passenger_heat_available)
+        if position == SeatPosition.COPILOT and mode == "vent":
+            return bool(self._passenger_ventilation_available)
+        return False
 
     async def heat(self, position: SeatPosition, level: SeatLevel) -> None:
         """Set seat heating level.
@@ -111,6 +131,13 @@ class SeatCapability:
 
     async def _set_seat(self, position: SeatPosition, mode: str, level: SeatLevel) -> None:
         """Internal: build params from current state and execute command."""
+        if not self._is_mode_available(position, mode):
+            raise BydEndpointNotSupportedError(
+                f"Seat {position.value} {mode} capability not supported for VIN {self._vin}",
+                code="capability_unsupported",
+                endpoint=f"seat.{mode}",
+            )
+
         param_key = _PARAM_KEY_MAP[(position, mode)]
         status_field = _STATUS_FIELD_MAP[(position, mode)]
         status_value = level.to_status_value()

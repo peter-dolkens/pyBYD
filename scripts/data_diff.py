@@ -201,6 +201,10 @@ ENDPOINTS: list[tuple[str, str]] = [
         "Trip energy consumption, average efficiency, fuel consumption (PHEV)",
     ),
     (
+        "latest_config",
+        "Feature-capability configuration (functionNo/code list)",
+    ),
+    (
         "push",
         "Push-notification switch (on/off)",
     ),
@@ -235,6 +239,8 @@ async def _fetch(client: BydClient, endpoint: str, vin: str) -> Any:
         return await client.get_charging_status(vin)
     if endpoint == "energy":
         return await client.get_energy_consumption(vin)
+    if endpoint == "latest_config":
+        return await client.get_latest_config(vin)
     if endpoint == "push":
         return await client.get_push_state(vin)
     raise ValueError(f"Unknown endpoint: {endpoint}")

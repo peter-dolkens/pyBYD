@@ -3,6 +3,7 @@
 from pybyd._constants import VALID_CLIMATE_DURATIONS, minutes_to_time_span
 from pybyd.models._base import BydBaseModel, BydEnum, BydTimestamp, parse_byd_timestamp
 from pybyd.models.charging import ChargingStatus
+from pybyd.models.command_gating import CommandGateRule, CommandGateVerdict
 from pybyd.models.control import (
     BatteryHeatParams,
     ClimateScheduleParams,
@@ -21,6 +22,7 @@ from pybyd.models.control import (
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus, celsius_to_scale
+from pybyd.models.latest_config import LatestConfigFunction, VehicleCapabilities, VehicleLatestConfig
 from pybyd.models.push_notification import PushNotificationState
 from pybyd.models.realtime import (
     AirCirculationMode,
@@ -50,6 +52,8 @@ __all__ = [
     "BydTimestamp",
     "ChargingState",
     "ChargingStatus",
+    "CommandGateRule",
+    "CommandGateVerdict",
     "ClimateScheduleParams",
     "ClimateStartParams",
     "CommandAck",
@@ -64,6 +68,7 @@ __all__ = [
     "EnergyConsumption",
     "GpsInfo",
     "HvacStatus",
+    "LatestConfigFunction",
     "LockState",
     "OnlineState",
     "PowerGear",
@@ -76,7 +81,9 @@ __all__ = [
     "StearingWheelHeat",
     "TirePressureUnit",
     "VALID_CLIMATE_DURATIONS",
+    "VehicleCapabilities",
     "Vehicle",
+    "VehicleLatestConfig",
     "VehicleRealtimeData",
     "VehicleState",
     "VerifyControlPasswordResponse",

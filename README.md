@@ -83,7 +83,7 @@ asyncio.run(main())
 | `get_vehicle_realtime(vin)` | Battery, range, speed, doors, tire pressure |
 | `get_gps_info(vin)` | GPS latitude, longitude, speed, heading |
 | `get_energy_consumption(vin)` | Energy and fuel consumption stats |
-| `verify_control_password(vin)` | Verify remote control PIN/password for a VIN |
+| `verify_command_access(vin)` | Verify control PIN and enable remote commands |
 | `lock(vin)` | Lock doors |
 | `unlock(vin)` | Unlock doors |
 | `flash_lights(vin)` | Flash lights |
@@ -223,9 +223,9 @@ Lifecycle status values are:
 - `expired`
 - `uncorrelated`
 
-`verify_control_password(...)` is available as an explicit helper call,
-but remote commands are sent directly with `commandPwd` and rely on API
-responses for success/failure.
+`verify_command_access(vin)` must be called once during setup to verify
+the control PIN and enable remote commands.  If verification fails,
+commands remain disabled for the lifetime of the client.
 
 ## Error handling
 
@@ -281,7 +281,7 @@ python scripts/dump_all.py --skip-gps --skip-energy
 
 ### `generate_api_mapping_tables.py` — GitHub issue mapping tables
 
-Polls data endpoints and builds one markdown table per endpoint with:
+Polls data endpoints and builds two markdown tables per endpoint (Mapped and Unmapped) with:
 
 - raw API key
 - raw current value

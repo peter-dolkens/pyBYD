@@ -35,24 +35,7 @@ def decrypt_block_auth(
     block: bytes | bytearray,
     round_start: int = 1,
 ) -> bytes:
-    """Decrypt a single 16-byte block using white-box AES tables.
-
-    Port of bangcle.js decryptBlockAuth (lines 37-144).
-
-    Parameters
-    ----------
-    tables : BangcleTables
-        Pre-loaded lookup tables.
-    block : bytes
-        16-byte ciphertext block.
-    round_start : int
-        Starting round (default 1 = full decryption).
-
-    Returns
-    -------
-    bytes
-        16-byte decrypted block.
-    """
+    """Decrypt a single 16-byte block using white-box AES tables."""
     state = bytearray(32)
     temp64 = bytearray(64)
     tmp32 = bytearray(32)
@@ -159,24 +142,7 @@ def encrypt_block_auth(
     block: bytes | bytearray,
     round_end: int = 10,
 ) -> bytes:
-    """Encrypt a single 16-byte block using white-box AES tables.
-
-    Port of bangcle.js encryptBlockAuth (lines 147-253).
-
-    Parameters
-    ----------
-    tables : BangcleTables
-        Pre-loaded lookup tables.
-    block : bytes
-        16-byte plaintext block.
-    round_end : int
-        Ending round (default 10 = full encryption).
-
-    Returns
-    -------
-    bytes
-        16-byte encrypted block.
-    """
+    """Encrypt a single 16-byte block using white-box AES tables."""
     state = bytearray(32)
     temp64 = bytearray(64)
     tmp32 = bytearray(32)
@@ -279,27 +245,7 @@ def _xor_into(target: bytearray, source: bytes | bytearray) -> None:
 
 
 def decrypt_cbc(tables: BangcleTables, data: bytes, iv: bytes) -> bytes:
-    """Decrypt data using white-box AES in CBC mode.
-
-    Parameters
-    ----------
-    tables : BangcleTables
-        Pre-loaded lookup tables.
-    data : bytes
-        Ciphertext (must be a multiple of 16 bytes).
-    iv : bytes
-        16-byte initialization vector.
-
-    Returns
-    -------
-    bytes
-        Decrypted plaintext.
-
-    Raises
-    ------
-    ValueError
-        If data length is not a multiple of 16, or IV is not 16 bytes.
-    """
+    """Decrypt data using white-box AES in CBC mode."""
     if len(data) % 16 != 0:
         raise ValueError(f"Ciphertext length {len(data)} is not a multiple of 16")
     if len(iv) != 16:
@@ -319,27 +265,7 @@ def decrypt_cbc(tables: BangcleTables, data: bytes, iv: bytes) -> bytes:
 
 
 def encrypt_cbc(tables: BangcleTables, data: bytes, iv: bytes) -> bytes:
-    """Encrypt data using white-box AES in CBC mode.
-
-    Parameters
-    ----------
-    tables : BangcleTables
-        Pre-loaded lookup tables.
-    data : bytes
-        Plaintext (must be a multiple of 16 bytes).
-    iv : bytes
-        16-byte initialization vector.
-
-    Returns
-    -------
-    bytes
-        Ciphertext.
-
-    Raises
-    ------
-    ValueError
-        If data length is not a multiple of 16, or IV is not 16 bytes.
-    """
+    """Encrypt data using white-box AES in CBC mode."""
     if len(data) % 16 != 0:
         raise ValueError(f"Plaintext length {len(data)} is not a multiple of 16")
     if len(iv) != 16:

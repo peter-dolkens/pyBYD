@@ -35,25 +35,7 @@ def _parse_hex_bytes(
 
 
 def aes_encrypt_hex(plaintext: str, key_hex: str) -> str:
-    """AES-128-CBC encrypt with zero IV, returning uppercase hex.
-
-    Parameters
-    ----------
-    plaintext : str
-        UTF-8 string to encrypt.
-    key_hex : str
-        32-character hex key (16 bytes).
-
-    Returns
-    -------
-    str
-        Uppercase hex ciphertext.
-
-    Raises
-    ------
-    BydCryptoError
-        If encryption fails.
-    """
+    """AES-128-CBC encrypt with zero IV, returning uppercase hex."""
     try:
         key = _parse_hex_bytes(key_hex, name="AES key", allowed_nbytes={16, 24, 32})
         padder = padding.PKCS7(128).padder()
@@ -67,25 +49,7 @@ def aes_encrypt_hex(plaintext: str, key_hex: str) -> str:
 
 
 def aes_decrypt_utf8(cipher_hex: str, key_hex: str) -> str:
-    """AES-128-CBC decrypt from hex with zero IV, returning UTF-8 string.
-
-    Parameters
-    ----------
-    cipher_hex : str
-        Hex-encoded ciphertext.
-    key_hex : str
-        32-character hex key (16 bytes).
-
-    Returns
-    -------
-    str
-        Decrypted UTF-8 plaintext.
-
-    Raises
-    ------
-    BydCryptoError
-        If decryption fails.
-    """
+    """AES-128-CBC decrypt from hex with zero IV, returning UTF-8 string."""
     try:
         key = _parse_hex_bytes(key_hex, name="AES key", allowed_nbytes={16, 24, 32})
         ct = _parse_hex_bytes(cipher_hex, name="AES ciphertext")

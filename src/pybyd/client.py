@@ -17,6 +17,7 @@ from pybyd._api import control as _control_api
 from pybyd._api import energy as _energy_api
 from pybyd._api import gps as _gps_api
 from pybyd._api import hvac as _hvac_api
+from pybyd._api import latest_config as _latest_config_api
 from pybyd._api import push_notifications as _push_api
 from pybyd._api import realtime as _realtime_api
 from pybyd._api import smart_charging as _smart_api
@@ -28,9 +29,16 @@ from pybyd._crypto.hashing import md5_hex
 from pybyd._mqtt import BydMqttRuntime, MqttEvent, fetch_mqtt_bootstrap
 from pybyd._transport import SecureTransport
 from pybyd.config import BydConfig
-from pybyd.exceptions import BydDataUnavailableError, BydError, BydSessionExpiredError
+from pybyd.exceptions import (
+    BydControlPasswordError,
+    BydDataUnavailableError,
+    BydEndpointNotSupportedError,
+    BydError,
+    BydSessionExpiredError,
+)
 from pybyd.models._base import BydBaseModel
 from pybyd.models.charging import ChargingStatus
+from pybyd.models.command_gating import evaluate_command_gate
 from pybyd.models.control import (
     BatteryHeatParams,
     ClimateScheduleParams,
@@ -49,6 +57,7 @@ from pybyd.models.control import (
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus
+from pybyd.models.latest_config import VehicleCapabilities, VehicleLatestConfig
 from pybyd.models.push_notification import PushNotificationState
 from pybyd.models.realtime import VehicleRealtimeData
 from pybyd.models.smart_charging import SmartChargingSchedule
@@ -142,6 +151,10 @@ class BydClient:
         self._data_poll_serials: set[str] = set()
         # Per-VIN BydCar instances for domain-level state management.
         self._cars: dict[str, BydCar] = {}
+        # Per-VIN normalized capability availability.
+        self._vehicle_capabilities: dict[str, VehicleCapabilities] = {}
+        # Whether remote commands are enabled (set by verify_command_access).
+        self._commands_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Context manager lifecycle
@@ -183,6 +196,7 @@ class BydClient:
         for car in self._cars.values():
             car.close()
         self._cars.clear()
+        self._vehicle_capabilities.clear()
         self._stop_mqtt()
         if not self._external_session and self._http_session is not None:
             await self._http_session.close()
@@ -225,7 +239,12 @@ class BydClient:
         return self._session
 
     def invalidate_session(self) -> None:
-        """Force session invalidation (next call will re-authenticate)."""
+        """Force session invalidation (next call will re-authenticate).
+
+        Note: ``_commands_enabled`` is intentionally preserved across
+        re-authentication because the control PIN itself does not change.
+        To reset command access, create a new :class:`BydClient` instance.
+        """
         self._session = None
 
     # ------------------------------------------------------------------
@@ -249,9 +268,27 @@ class BydClient:
         return ""
 
     def _require_command_pwd(self, command_pwd: str | None) -> str:
+        """Resolve and return the control PIN hash, or raise.
+
+        Raises :class:`BydControlPasswordError` if no PIN is available
+        *or* if command access has not been verified via
+        :meth:`verify_command_access`.
+        """
+        if not self._commands_enabled:
+            raise BydControlPasswordError(
+                "Command access not available. "
+                "Call verify_command_access() during setup, "
+                "or check that the control PIN is correct.",
+                code="commands_disabled",
+                endpoint="",
+            )
         resolved = self._resolve_command_pwd(command_pwd)
         if not resolved:
-            raise ValueError("No control PIN available (set config.control_pin or pass command_pwd)")
+            raise BydControlPasswordError(
+                "No control PIN configured. Set config.control_pin or pass command_pwd.",
+                code="no_pin",
+                endpoint="",
+            )
         return resolved
 
     def _emit_command_lifecycle(
@@ -880,15 +917,56 @@ class BydClient:
             if vehicle is None:
                 raise BydError(f"Vehicle {vin} not found in account")
 
+        capabilities = await self.get_vehicle_capabilities(vin)
+
         car = BydCar(
             self,
             vin,
             vehicle,
+            capabilities=capabilities,
             on_state_changed=on_state_changed,
             projection_ttl=projection_ttl,
         )
         self._cars[vin] = car
         return car
+
+    async def get_latest_configs(self, vins: list[str]) -> dict[str, VehicleLatestConfig]:
+        """Fetch raw latest-config payload for one or more VINs."""
+        return await self._authed_call(_latest_config_api.fetch_latest_config, vins)
+
+    async def get_latest_config(self, vin: str) -> VehicleLatestConfig:
+        """Fetch raw latest-config payload for a single VIN."""
+        configs = await self.get_latest_configs([vin])
+        config = configs.get(vin)
+        if config is None:
+            raise BydDataUnavailableError(
+                f"Latest config unavailable for VIN {vin}",
+                code="latest_config_missing",
+                endpoint="/vehicle/vehicleswitch/getLatestConfig",
+            )
+        return config
+
+    async def get_vehicle_capabilities(
+        self,
+        vin: str,
+        *,
+        force_refresh: bool = False,
+    ) -> VehicleCapabilities:
+        """Return normalized vehicle capability availability for a VIN."""
+        if not force_refresh:
+            cached = self._vehicle_capabilities.get(vin)
+            if cached is not None:
+                return cached
+
+        try:
+            latest = await self.get_latest_config(vin)
+            caps = VehicleCapabilities.from_latest_config(vin, latest)
+        except Exception:
+            _logger.debug("Failed to build capabilities for vin=%s", vin, exc_info=True)
+            caps = VehicleCapabilities.unknown(vin, reason="fetch_error")
+
+        self._vehicle_capabilities[vin] = caps
+        return caps
 
     async def get_vehicle_realtime(
         self,
@@ -981,15 +1059,44 @@ class BydClient:
     # Control commands
     # ------------------------------------------------------------------
 
-    async def verify_control_password(
+    @property
+    def commands_enabled(self) -> bool:
+        """Whether remote commands are available.
+
+        Returns ``True`` only after :meth:`verify_command_access` succeeds.
+        A new :class:`BydClient` instance is required to retry after failure.
+        """
+        return self._commands_enabled
+
+    async def verify_command_access(
         self,
         vin: str,
         *,
         command_pwd: str | None = None,
     ) -> VerifyControlPasswordResponse:
-        """Verify the remote control PIN."""
-        pwd = self._require_command_pwd(command_pwd)
-        return await self._authed_call(_control_api.verify_control_password, vin, pwd)
+        """Verify the control PIN and enable remote commands.
+
+        Must be called **once** during setup before issuing any remote
+        commands.  Makes a single HTTP call to ``verifyControlPassword``.
+
+        On success, :attr:`commands_enabled` becomes ``True`` for the
+        lifetime of this client (survives session re-authentication).
+
+        On failure (wrong PIN or account locked), raises
+        :class:`~pybyd.exceptions.BydControlPasswordError` and commands
+        remain disabled.  Create a new :class:`BydClient` to retry.
+        """
+        resolved = self._resolve_command_pwd(command_pwd)
+        if not resolved:
+            raise BydControlPasswordError(
+                "No control PIN configured. Set config.control_pin or pass command_pwd.",
+                code="no_pin",
+                endpoint="",
+            )
+        result = await self._authed_call(_control_api.verify_control_password, vin, resolved)
+        self._commands_enabled = True
+        _logger.info("Command access verified for VIN %s…%s", vin[:3], vin[-4:])
+        return result
 
     async def _remote_control(
         self,
@@ -1002,12 +1109,22 @@ class BydClient:
         poll_interval: float = 1.5,
     ) -> RemoteControlResult:
         """Internal: send a remote command and poll/wait for result."""
+        capabilities = await self.get_vehicle_capabilities(vin)
+
         params_dict: dict[str, Any] | None = None
         if control_params is not None:
             if isinstance(control_params, ControlParams):
                 params_dict = control_params.to_control_params_map()
             else:
                 params_dict = dict(control_params)
+
+        gate = evaluate_command_gate(command, capabilities, control_params=params_dict)
+        if not gate.supported:
+            raise BydEndpointNotSupportedError(
+                (f"Remote command {command.value} blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
+                code="command_gate_blocked",
+                endpoint="/control/remoteControl",
+            )
 
         async def _mqtt_result_waiter(serial: str | None) -> RemoteControlResult | None:
             """Adapter: generic _mqtt_wait → RemoteControlResult."""

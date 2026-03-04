@@ -31,6 +31,8 @@ from pybyd.models import (
     SeatHeatVentState,
     TirePressureUnit,
     Vehicle,
+    VehicleCapabilities,
+    VehicleLatestConfig,
     VehicleRealtimeData,
     WindowState,
 )
@@ -68,7 +70,9 @@ __all__ = [
     "SeatPosition",
     "TirePressureUnit",
     "VALID_CLIMATE_DURATIONS",
+    "VehicleCapabilities",
     "Vehicle",
+    "VehicleLatestConfig",
     "VehicleRealtimeData",
     "VehicleSnapshot",
     "WindowState",

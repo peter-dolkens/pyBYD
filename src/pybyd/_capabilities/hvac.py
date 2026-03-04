@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pybyd._constants import minutes_to_time_span
 from pybyd._state_engine import ProjectionSpec
+from pybyd.exceptions import BydEndpointNotSupportedError
 from pybyd.models.control import ClimateScheduleParams, ClimateStartParams
 from pybyd.models.hvac import HvacOverallStatus
 from pybyd.models.realtime import SeatHeatVentState, StearingWheelHeat
@@ -25,12 +26,26 @@ class HvacCapability:
         schedule_fn: Callable[..., Awaitable[Any]],
         vin: str,
         execute_command: Callable[..., Awaitable[None]],
+        available: bool | None = True,
     ) -> None:
         self._start_fn = start_fn
         self._stop_fn = stop_fn
         self._schedule_fn = schedule_fn
         self._vin = vin
         self._execute = execute_command
+        self._available = available
+
+    @property
+    def available(self) -> bool:
+        return bool(self._available)
+
+    def _ensure_available(self) -> None:
+        if not self.available:
+            raise BydEndpointNotSupportedError(
+                f"HVAC capability not supported for VIN {self._vin}",
+                code="capability_unsupported",
+                endpoint="hvac",
+            )
 
     async def start(self, temperature: float = 21.0, duration: int = 20) -> None:
         """Start climate control.
@@ -42,6 +57,7 @@ class HvacCapability:
         duration
             Run duration in minutes (10/15/20/25/30).
         """
+        self._ensure_available()
         time_span = minutes_to_time_span(duration)
         params = ClimateStartParams(temperature=temperature, time_span=time_span)
         specs = [
@@ -56,6 +72,7 @@ class HvacCapability:
 
     async def stop(self) -> None:
         """Stop climate control (including seat/steering heat)."""
+        self._ensure_available()
         specs = [
             ProjectionSpec("hvac", "status", HvacOverallStatus.OFF),
             ProjectionSpec("hvac", "main_seat_heat_state", SeatHeatVentState.OFF),
@@ -83,6 +100,7 @@ class HvacCapability:
         params
             Pre-built schedule parameters (create/modify/remove).
         """
+        self._ensure_available()
 
         async def _cmd() -> Any:
             return await self._schedule_fn(self._vin, params=params)

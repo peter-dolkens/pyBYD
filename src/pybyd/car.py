@@ -40,6 +40,7 @@ from pybyd.models.charging import ChargingStatus
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus
+from pybyd.models.latest_config import VehicleCapabilities
 from pybyd.models.realtime import VehicleRealtimeData
 from pybyd.models.vehicle import Vehicle
 
@@ -78,6 +79,7 @@ class BydCar:
         vin: str,
         vehicle: Vehicle,
         *,
+        capabilities: VehicleCapabilities | None = None,
         on_state_changed: Callable[[str, VehicleSnapshot], None] | None = None,
         projection_ttl: float = _DEFAULT_PROJECTION_TTL,
     ) -> None:
@@ -90,6 +92,26 @@ class BydCar:
             on_state_changed=on_state_changed,
             projection_ttl=projection_ttl,
         )
+        self._capabilities = capabilities or VehicleCapabilities.model_validate(
+            {
+                "vin": vin,
+                "source": "implicit_default",
+                "lock": True,
+                "unlock": True,
+                "climate": True,
+                "car_on": True,
+                "battery_heat": True,
+                "steering_wheel_heat": True,
+                "driver_seat_heat": True,
+                "driver_seat_ventilation": True,
+                "passenger_seat_heat": True,
+                "passenger_seat_ventilation": True,
+                "find_car": True,
+                "flash_lights": True,
+                "close_windows": True,
+                "location": True,
+            }
+        )
 
         # --- Capability namespaces ---
         self.lock = LockCapability(
@@ -97,6 +119,7 @@ class BydCar:
             unlock_fn=client.unlock,
             vin=vin,
             execute_command=self._execute_command,
+            available=self._capabilities.lock,
         )
         self.hvac = HvacCapability(
             start_fn=client.start_climate,
@@ -104,34 +127,44 @@ class BydCar:
             schedule_fn=client.schedule_climate,
             vin=vin,
             execute_command=self._execute_command,
+            available=self._capabilities.climate,
         )
         self.seat = SeatCapability(
             set_seat_climate_fn=client.set_seat_climate,
             vin=vin,
             get_state=lambda: self._engine.snapshot,
             execute_command=self._execute_command,
+            driver_heat_available=self._capabilities.driver_seat_heat,
+            driver_ventilation_available=self._capabilities.driver_seat_ventilation,
+            passenger_heat_available=self._capabilities.passenger_seat_heat,
+            passenger_ventilation_available=self._capabilities.passenger_seat_ventilation,
         )
         self.steering = SteeringCapability(
             set_seat_climate_fn=client.set_seat_climate,
             vin=vin,
             get_state=lambda: self._engine.snapshot,
             execute_command=self._execute_command,
+            available=self._capabilities.steering_wheel_heat,
         )
         self.battery = BatteryHeatCapability(
             set_battery_heat_fn=client.set_battery_heat,
             vin=vin,
             execute_command=self._execute_command,
+            available=self._capabilities.battery_heat,
         )
         self.finder = FinderCapability(
             find_fn=client.find_car,
             flash_fn=client.flash_lights,
             vin=vin,
             execute_command=self._execute_command,
+            find_available=self._capabilities.find_car,
+            flash_available=self._capabilities.flash_lights,
         )
         self.windows = WindowsCapability(
             close_fn=client.close_windows,
             vin=vin,
             execute_command=self._execute_command,
+            close_available=self._capabilities.close_windows,
         )
 
     # ------------------------------------------------------------------
@@ -147,6 +180,11 @@ class BydCar:
     def state(self) -> VehicleSnapshot:
         """Current projected vehicle state (immutable snapshot)."""
         return self._engine.snapshot
+
+    @property
+    def capabilities(self) -> VehicleCapabilities:
+        """Normalized capability availability for this vehicle."""
+        return self._capabilities
 
     # ------------------------------------------------------------------
     # Data fetch methods

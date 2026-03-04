@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pybyd.exceptions import BydEndpointNotSupportedError
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -22,14 +24,32 @@ class FinderCapability:
         flash_fn: Callable[..., Awaitable[Any]],
         vin: str,
         execute_command: Callable[..., Awaitable[None]],
+        find_available: bool | None = True,
+        flash_available: bool | None = True,
     ) -> None:
         self._find_fn = find_fn
         self._flash_fn = flash_fn
         self._vin = vin
         self._execute = execute_command
+        self._find_available = find_available
+        self._flash_available = flash_available
+
+    @property
+    def find_available(self) -> bool:
+        return bool(self._find_available)
+
+    @property
+    def flash_available(self) -> bool:
+        return bool(self._flash_available)
 
     async def find(self) -> None:
         """Activate find-my-car (horn + lights)."""
+        if not self.find_available:
+            raise BydEndpointNotSupportedError(
+                f"Find-car capability not supported for VIN {self._vin}",
+                code="capability_unsupported",
+                endpoint="finder.find",
+            )
 
         async def _cmd() -> Any:
             return await self._find_fn(self._vin)
@@ -38,6 +58,12 @@ class FinderCapability:
 
     async def flash_lights(self) -> None:
         """Flash vehicle lights."""
+        if not self.flash_available:
+            raise BydEndpointNotSupportedError(
+                f"Flash-lights capability not supported for VIN {self._vin}",
+                code="capability_unsupported",
+                endpoint="finder.flash_lights",
+            )
 
         async def _cmd() -> Any:
             return await self._flash_fn(self._vin)

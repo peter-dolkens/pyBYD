@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pybyd._state_engine import ProjectionSpec, VehicleSnapshot
+from pybyd.exceptions import BydEndpointNotSupportedError
 from pybyd.models.control import SeatClimateParams
 from pybyd.models.hvac import HvacOverallStatus
 from pybyd.models.realtime import StearingWheelHeat
@@ -23,11 +24,25 @@ class SteeringCapability:
         vin: str,
         get_state: Callable[[], VehicleSnapshot],
         execute_command: Callable[..., Awaitable[None]],
+        available: bool | None = True,
     ) -> None:
         self._set_seat_climate_fn = set_seat_climate_fn
         self._vin = vin
         self._get_state = get_state
         self._execute = execute_command
+        self._available = available
+
+    @property
+    def available(self) -> bool:
+        return bool(self._available)
+
+    def _ensure_available(self) -> None:
+        if not self.available:
+            raise BydEndpointNotSupportedError(
+                f"Steering heat capability not supported for VIN {self._vin}",
+                code="capability_unsupported",
+                endpoint="steering",
+            )
 
     async def heat(self, *, on: bool) -> None:
         """Enable or disable steering wheel heating.
@@ -37,6 +52,7 @@ class SteeringCapability:
         on
             ``True`` to enable, ``False`` to disable.
         """
+        self._ensure_available()
         status_value = StearingWheelHeat.ON if on else StearingWheelHeat.OFF
         command_value = 1 if on else 3  # BYD command scale: 1=on, 3=off
 
