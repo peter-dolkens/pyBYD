@@ -118,16 +118,6 @@ except BydApiError as e:
     print(f"API error: {e.code} at {e.endpoint}")
 ```
 
-## Development
-
-Project guidance: [CLAUDE.md](CLAUDE.md)
-
-```bash
-ruff check .
-black --check .
-mypy src/pybyd
-pytest
-```
 
 ## Scripts
 
