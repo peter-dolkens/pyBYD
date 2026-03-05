@@ -293,10 +293,7 @@ def _format_endpoint_error(exc: Exception) -> str:
             f"endpoint={exc.endpoint or 'unknown'} message={sanitized_message}"
         )
     if isinstance(exc, BydApiError):
-        return (
-            f"ApiError code={exc.code or 'unknown'} endpoint={exc.endpoint or 'unknown'} "
-            f"message={sanitized_message}"
-        )
+        return f"ApiError code={exc.code or 'unknown'} endpoint={exc.endpoint or 'unknown'} message={sanitized_message}"
     return f"{type(exc).__name__}: {sanitized_message}"
 
 
@@ -374,10 +371,7 @@ def _render_table_block(lines: list[str], title: str, rows: list[tuple[str, Any,
 
     for raw_key, raw_value, parsed_text in rows:
         lines.append(
-            "| "
-            f"{_escape_cell(raw_key)} | "
-            f"{_escape_cell(_json_value(raw_value))} | "
-            f"{_escape_cell(parsed_text)} |"
+            f"| {_escape_cell(raw_key)} | {_escape_cell(_json_value(raw_value))} | {_escape_cell(parsed_text)} |"
         )
 
     lines.append("")

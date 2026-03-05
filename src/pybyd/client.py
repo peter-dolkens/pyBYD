@@ -1121,7 +1121,7 @@ class BydClient:
         gate = evaluate_command_gate(command, capabilities, control_params=params_dict)
         if not gate.supported:
             raise BydEndpointNotSupportedError(
-                (f"Remote command {command.value} blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
+                (f"Remote command {command.value} blocked for VIN {vin}: gate={gate.gate_id} reason={gate.reason}"),
                 code="command_gate_blocked",
                 endpoint="/control/remoteControl",
             )

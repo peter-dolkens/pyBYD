@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
 
-from pybyd._validators import guard_gps_coordinates, keep_previous_when_zero
+from pybyd._validators import apply_gps_filters, apply_realtime_filters
 from pybyd.models.charging import ChargingStatus
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
@@ -37,14 +37,6 @@ _logger = logging.getLogger(__name__)
 
 # Sentinel for missing attributes
 _MISSING: object = object()
-
-_LOCK_FIELD_NAMES: tuple[str, ...] = (
-    "left_front_door_lock",
-    "right_front_door_lock",
-    "left_rear_door_lock",
-    "right_rear_door_lock",
-    "sliding_door_lock",
-)
 
 
 # ------------------------------------------------------------------
@@ -224,9 +216,9 @@ class VehicleStateEngine:
     # ------------------------------------------------------------------
 
     async def update_realtime(self, data: VehicleRealtimeData) -> None:
-        """Merge incoming realtime data through validators and guard window."""
+        """Merge incoming realtime data through centralized filters and guard window."""
         async with self._lock:
-            validated = self._validate_realtime(self._base_realtime, data)
+            validated = apply_realtime_filters(self._base_realtime, data)
             self._base_realtime = validated
             self._reconcile_projections("realtime", validated)
             self._rebuild_snapshot()
@@ -239,9 +231,9 @@ class VehicleStateEngine:
             self._rebuild_snapshot()
 
     async def update_gps(self, data: GpsInfo) -> None:
-        """Merge incoming GPS data through validators and guard window."""
+        """Merge incoming GPS data through centralized filters and guard window."""
         async with self._lock:
-            validated = guard_gps_coordinates(self._base_gps, data)
+            validated = apply_gps_filters(self._base_gps, data)
             self._base_gps = validated
             if validated is not None:
                 self._reconcile_projections("gps", validated)
@@ -268,31 +260,6 @@ class VehicleStateEngine:
     def _generate_command_id(self) -> str:
         self._next_command_id += 1
         return f"cmd-{self._next_command_id}"
-
-    def _validate_realtime(
-        self,
-        previous: VehicleRealtimeData | None,
-        incoming: VehicleRealtimeData,
-    ) -> VehicleRealtimeData:
-        """Apply value-quality validators to incoming realtime data."""
-        if previous is None:
-            return incoming
-        updates: dict[str, Any] = {}
-
-        incoming_fields = incoming.model_fields_set
-        for field_name in _LOCK_FIELD_NAMES:
-            if field_name in incoming_fields:
-                continue
-            previous_value = getattr(previous, field_name, _MISSING)
-            if previous_value is not _MISSING:
-                updates[field_name] = previous_value
-
-        guarded_soc = keep_previous_when_zero(previous.elec_percent, incoming.elec_percent)
-        if guarded_soc != incoming.elec_percent:
-            updates["elec_percent"] = guarded_soc
-        if updates:
-            return incoming.model_copy(update=updates)
-        return incoming
 
     def _reconcile_projections(self, section: str, data: object) -> None:
         """Remove projections confirmed by incoming data; expire stale ones.
