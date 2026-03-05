@@ -5,7 +5,7 @@ incoming payloads before values are persisted by the state engine.
 
 Design goals
 ------------
-1. Keep filtering rules in one place (not scattered in ``_state_engine.py``).
+1. Keep filtering rules in one place.
 2. Support both section-level and per-field filtering patterns.
 3. Make extension safe and explicit, so new rules are easy to add.
 
@@ -75,29 +75,35 @@ Returns:
 """
 
 
+def _has_valid_coordinates(gps: GpsInfo) -> bool:
+    """Return True when *gps* carries a usable latitude/longitude pair.
+
+    A coordinate pair is considered **invalid** (returns False) when:
+    - either latitude or longitude is ``None`` (partial fix is useless), or
+    - both values fall within the Null Island threshold (API artefact).
+    """
+    lat, lon = gps.latitude, gps.longitude
+    if lat is None or lon is None:
+        return False
+    return not (abs(lat) < _GPS_NULL_ISLAND_THRESHOLD and abs(lon) < _GPS_NULL_ISLAND_THRESHOLD)
+
+
 def guard_gps_coordinates(
     previous: GpsInfo | None,
     incoming: GpsInfo | None,
 ) -> GpsInfo | None:
     """Return the best available GpsInfo, preferring *incoming*.
 
-    Falls back to *previous* when *incoming* has ``None`` coordinates
-    or suspiciously near-zero ``(0, 0)`` "Null Island" coordinates.
-    On first startup (``previous=None``) always returns *incoming*.
+    Falls back to *previous* when *incoming* has incomplete coordinates
+    (either value is ``None``), suspiciously near-zero ``(0, 0)``
+    "Null Island" coordinates, or is ``None`` itself.
+
+    On first startup (``previous is None``) the same validity checks
+    apply; ``None`` is returned when no usable coordinates exist yet.
     """
     if incoming is None:
         return previous
-    if previous is None:
-        return incoming
-    lat, lon = incoming.latitude, incoming.longitude
-    if lat is None and lon is None:
-        return previous
-    if (
-        lat is not None
-        and lon is not None
-        and abs(lat) < _GPS_NULL_ISLAND_THRESHOLD
-        and abs(lon) < _GPS_NULL_ISLAND_THRESHOLD
-    ):
+    if not _has_valid_coordinates(incoming):
         return previous
     return incoming
 
