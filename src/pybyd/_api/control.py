@@ -31,7 +31,7 @@ from pybyd.session import Session
 
 _logger = logging.getLogger(__name__)
 
-_CONTROL_PASSWORD_ERROR_CODES: frozenset[str] = frozenset({"5005", "5006"})
+_CONTROL_PASSWORD_ERROR_CODES: frozenset[str] = frozenset({"5005", "5006", "5011"})
 _REMOTE_CONTROL_SERVICE_ERROR_CODES: frozenset[str] = frozenset({"1009"})
 _REMOTE_CONTROL_GENERIC_ERROR_CODES: frozenset[str] = frozenset({"1001"})
 _REMOTE_CONTROL_ENDPOINTS: frozenset[str] = frozenset({"/control/remoteControl", "/control/remoteControlResult"})

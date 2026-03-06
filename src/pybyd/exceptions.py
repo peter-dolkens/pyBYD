@@ -77,6 +77,7 @@ class BydControlPasswordError(BydApiError):
     Covers BYD API codes such as:
     - ``5005`` wrong operation password
     - ``5006`` cloud control temporarily locked for the day
+    - ``5011`` operation password not set on the BYD account/app
     """
 
 
