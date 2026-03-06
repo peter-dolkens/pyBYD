@@ -114,7 +114,7 @@ def keep_previous_when_zero(
 ) -> float | None:
     """Return *previous* when *incoming* is zero, otherwise *incoming*.
 
-    Used to guard against transient zero-SOC spikes from the BYD API.
+    Used to guard against transient zero telemetry spikes from the BYD API.
     """
     if incoming is not None and incoming == 0 and previous is not None:
         return previous
@@ -133,13 +133,13 @@ def _preserve_previous_lock_filter(
     return _MISSING
 
 
-def _keep_previous_when_soc_zero_filter(
+def _keep_previous_when_zero_filter(
     _: str,
     previous_value: Any,
     incoming_value: Any,
     incoming_present: bool,
 ) -> Any | object:
-    """Keep previous SOC when incoming value is a transient zero spike."""
+    """Keep previous value when incoming value is a transient zero spike."""
     if not incoming_present:
         return _MISSING
     guarded_soc = keep_previous_when_zero(previous_value, incoming_value)
@@ -150,7 +150,15 @@ def _keep_previous_when_soc_zero_filter(
 
 _REALTIME_FIELD_FILTERS: dict[str, tuple[RealtimeFieldFilter, ...]] = {
     **{field_name: (_preserve_previous_lock_filter,) for field_name in _LOCK_FIELD_NAMES},
-    "elec_percent": (_keep_previous_when_soc_zero_filter,),
+    "elec_percent": (_keep_previous_when_zero_filter,),
+    "left_front_tire_pressure": (_keep_previous_when_zero_filter,),
+    "right_front_tire_pressure": (_keep_previous_when_zero_filter,),
+    "left_rear_tire_pressure": (_keep_previous_when_zero_filter,),
+    "right_rear_tire_pressure": (_keep_previous_when_zero_filter,),
+    "endurance_mileage": (_keep_previous_when_zero_filter,),
+    "ev_endurance": (_keep_previous_when_zero_filter,),
+    "endurance_mileage_v2": (_keep_previous_when_zero_filter,),
+    "oil_endurance": (_keep_previous_when_zero_filter,),
 }
 
 

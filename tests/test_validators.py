@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pybyd._validators import (
     _has_valid_coordinates,
     apply_gps_filters,
+    apply_realtime_filters,
     guard_gps_coordinates,
     keep_previous_when_zero,
 )
 from pybyd.models.gps import GpsInfo
+from pybyd.models.realtime import VehicleRealtimeData
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -177,3 +181,74 @@ class TestKeepPreviousWhenZero:
 
     def test_none_incoming_returns_none(self) -> None:
         assert keep_previous_when_zero(50.0, None) is None
+
+
+class TestApplyRealtimeZeroSmoothing:
+    """Zero-value smoothing for selected realtime telemetry fields."""
+
+    @pytest.mark.parametrize(
+        "field_name,previous_value",
+        [
+            ("left_front_tire_pressure", 2.4),
+            ("right_front_tire_pressure", 2.5),
+            ("left_rear_tire_pressure", 2.6),
+            ("right_rear_tire_pressure", 2.7),
+            ("endurance_mileage", 320.0),
+            ("ev_endurance", 310.0),
+            ("endurance_mileage_v2", 305.0),
+            ("oil_endurance", 420.0),
+        ],
+    )
+    def test_zero_incoming_with_previous_keeps_previous(self, field_name: str, previous_value: float) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: previous_value})
+        incoming = VehicleRealtimeData.model_validate({field_name: 0})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == previous_value
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_tire_pressure",
+            "right_front_tire_pressure",
+            "left_rear_tire_pressure",
+            "right_rear_tire_pressure",
+            "endurance_mileage",
+            "ev_endurance",
+            "endurance_mileage_v2",
+            "oil_endurance",
+        ],
+    )
+    def test_zero_incoming_without_previous_kept(self, field_name: str) -> None:
+        incoming = VehicleRealtimeData.model_validate({field_name: 0})
+
+        filtered = apply_realtime_filters(None, incoming)
+
+        assert getattr(filtered, field_name) == 0
+
+    @pytest.mark.parametrize(
+        "field_name,previous_value,incoming_value",
+        [
+            ("left_front_tire_pressure", 2.4, 2.3),
+            ("right_front_tire_pressure", 2.5, 2.4),
+            ("left_rear_tire_pressure", 2.6, 2.5),
+            ("right_rear_tire_pressure", 2.7, 2.6),
+            ("endurance_mileage", 320.0, 315.0),
+            ("ev_endurance", 310.0, 300.0),
+            ("endurance_mileage_v2", 305.0, 299.0),
+            ("oil_endurance", 420.0, 410.0),
+        ],
+    )
+    def test_nonzero_incoming_replaces_previous(
+        self,
+        field_name: str,
+        previous_value: float,
+        incoming_value: float,
+    ) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: previous_value})
+        incoming = VehicleRealtimeData.model_validate({field_name: incoming_value})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == incoming_value

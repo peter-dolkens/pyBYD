@@ -35,6 +35,7 @@ from pybyd.models import (
     VehicleLatestConfig,
     VehicleRealtimeData,
     WindowState,
+    minutes_to_time_span,
 )
 
 try:
@@ -76,4 +77,5 @@ __all__ = [
     "VehicleRealtimeData",
     "VehicleSnapshot",
     "WindowState",
+    "minutes_to_time_span",
 ]
