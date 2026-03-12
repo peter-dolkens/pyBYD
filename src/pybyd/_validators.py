@@ -158,6 +158,8 @@ _REALTIME_FIELD_FILTERS: dict[str, tuple[RealtimeFieldFilter, ...]] = {
     "endurance_mileage": (_keep_previous_when_zero_filter,),
     "ev_endurance": (_keep_previous_when_zero_filter,),
     "endurance_mileage_v2": (_keep_previous_when_zero_filter,),
+    "total_mileage": (_keep_previous_when_zero_filter,),
+    "total_mileage_v2": (_keep_previous_when_zero_filter,),
     "oil_endurance": (_keep_previous_when_zero_filter,),
 }
 
@@ -206,7 +208,7 @@ def apply_realtime_filters(
 
     Rules currently include:
     - per-door lock stability (preserve previous on missing/UNAVAILABLE),
-    - SOC zero-spike protection.
+    - selected numeric zero-spike protection (SOC/range/tire pressure/odometer).
 
     The returned model is either:
     - the original incoming payload when no override is needed, or

@@ -196,6 +196,8 @@ class TestApplyRealtimeZeroSmoothing:
             ("endurance_mileage", 320.0),
             ("ev_endurance", 310.0),
             ("endurance_mileage_v2", 305.0),
+            ("total_mileage", 18234.0),
+            ("total_mileage_v2", 18234.0),
             ("oil_endurance", 420.0),
         ],
     )
@@ -217,6 +219,8 @@ class TestApplyRealtimeZeroSmoothing:
             "endurance_mileage",
             "ev_endurance",
             "endurance_mileage_v2",
+            "total_mileage",
+            "total_mileage_v2",
             "oil_endurance",
         ],
     )
@@ -237,6 +241,8 @@ class TestApplyRealtimeZeroSmoothing:
             ("endurance_mileage", 320.0, 315.0),
             ("ev_endurance", 310.0, 300.0),
             ("endurance_mileage_v2", 305.0, 299.0),
+            ("total_mileage", 18234.0, 18240.0),
+            ("total_mileage_v2", 18234.0, 18240.0),
             ("oil_endurance", 420.0, 410.0),
         ],
     )
