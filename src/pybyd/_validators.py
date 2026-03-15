@@ -14,7 +14,7 @@ Two filtering styles are used:
 - **Section-level filters** (example: GPS):
     operate on the whole model because validity depends on multiple fields
     together (for example latitude + longitude).
-- **Per-field filters** (example: realtime lock/SOC):
+- **Per-field filters** (example: realtime zero-dropped fields):
     operate on one field at a time and can preserve previous values when
     incoming values are missing or non-authoritative.
 
@@ -47,17 +47,35 @@ from collections.abc import Callable
 from typing import Any
 
 from pybyd.models.gps import GpsInfo
-from pybyd.models.realtime import LockState, VehicleRealtimeData
+from pybyd.models.realtime import VehicleRealtimeData
 
 _GPS_NULL_ISLAND_THRESHOLD: float = 0.1
 _MISSING: object = object()
 
-_LOCK_FIELD_NAMES: tuple[str, ...] = (
+_ZERO_DROP_FIELD_NAMES: tuple[str, ...] = (
+    "left_front_door",
+    "right_front_door",
+    "left_rear_door",
+    "right_rear_door",
+    "trunk_lid",
+    "sliding_door",
+    "forehold",
     "left_front_door_lock",
     "right_front_door_lock",
     "left_rear_door_lock",
     "right_rear_door_lock",
     "sliding_door_lock",
+    "elec_percent",
+    "left_front_tire_pressure",
+    "right_front_tire_pressure",
+    "left_rear_tire_pressure",
+    "right_rear_tire_pressure",
+    "endurance_mileage",
+    "ev_endurance",
+    "endurance_mileage_v2",
+    "total_mileage",
+    "total_mileage_v2",
+    "oil_endurance",
 )
 
 RealtimeFieldFilter = Callable[[str, Any, Any, bool], Any | object]
@@ -108,59 +126,22 @@ def guard_gps_coordinates(
     return incoming
 
 
-def keep_previous_when_zero(
-    previous: float | None,
-    incoming: float | None,
-) -> float | None:
-    """Return *previous* when *incoming* is zero, otherwise *incoming*.
-
-    Used to guard against transient zero telemetry spikes from the BYD API.
-    """
-    if incoming is not None and incoming == 0 and previous is not None:
-        return previous
-    return incoming
-
-
-def _preserve_previous_lock_filter(
+def _drop_zero_value_filter(
     _: str,
     previous_value: Any,
     incoming_value: Any,
     incoming_present: bool,
 ) -> Any | object:
-    """Keep previous lock state when incoming value is missing or unavailable."""
-    if not incoming_present or incoming_value == LockState.UNAVAILABLE:
+    """Drop zero-valued incoming telemetry by preserving previous value."""
+    if not incoming_present:
+        return _MISSING
+    if incoming_value == 0:
         return previous_value
     return _MISSING
 
 
-def _keep_previous_when_zero_filter(
-    _: str,
-    previous_value: Any,
-    incoming_value: Any,
-    incoming_present: bool,
-) -> Any | object:
-    """Keep previous value when incoming value is a transient zero spike."""
-    if not incoming_present:
-        return _MISSING
-    guarded_soc = keep_previous_when_zero(previous_value, incoming_value)
-    if guarded_soc != incoming_value:
-        return guarded_soc
-    return _MISSING
-
-
 _REALTIME_FIELD_FILTERS: dict[str, tuple[RealtimeFieldFilter, ...]] = {
-    **{field_name: (_preserve_previous_lock_filter,) for field_name in _LOCK_FIELD_NAMES},
-    "elec_percent": (_keep_previous_when_zero_filter,),
-    "left_front_tire_pressure": (_keep_previous_when_zero_filter,),
-    "right_front_tire_pressure": (_keep_previous_when_zero_filter,),
-    "left_rear_tire_pressure": (_keep_previous_when_zero_filter,),
-    "right_rear_tire_pressure": (_keep_previous_when_zero_filter,),
-    "endurance_mileage": (_keep_previous_when_zero_filter,),
-    "ev_endurance": (_keep_previous_when_zero_filter,),
-    "endurance_mileage_v2": (_keep_previous_when_zero_filter,),
-    "total_mileage": (_keep_previous_when_zero_filter,),
-    "total_mileage_v2": (_keep_previous_when_zero_filter,),
-    "oil_endurance": (_keep_previous_when_zero_filter,),
+    **{field_name: (_drop_zero_value_filter,) for field_name in _ZERO_DROP_FIELD_NAMES},
 }
 
 
@@ -207,17 +188,14 @@ def apply_realtime_filters(
     """Apply all realtime filtering rules in one place.
 
     Rules currently include:
-    - per-door lock stability (preserve previous on missing/UNAVAILABLE),
-    - selected numeric zero-spike protection (SOC/range/tire pressure/odometer).
+    - selected realtime zero-drop gating (doors/locks, SOC/range/tire pressure/odometer).
 
     The returned model is either:
     - the original incoming payload when no override is needed, or
     - a copy with field overrides from registered filters.
     """
-    if previous is None:
-        return incoming
-
-    updates = _apply_model_field_filters(previous, incoming, _REALTIME_FIELD_FILTERS)
+    baseline = previous if previous is not None else VehicleRealtimeData.model_validate({})
+    updates = _apply_model_field_filters(baseline, incoming, _REALTIME_FIELD_FILTERS)
     if updates:
         return incoming.model_copy(update=updates)
     return incoming

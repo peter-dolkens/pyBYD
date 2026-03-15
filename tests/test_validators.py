@@ -9,10 +9,9 @@ from pybyd._validators import (
     apply_gps_filters,
     apply_realtime_filters,
     guard_gps_coordinates,
-    keep_previous_when_zero,
 )
 from pybyd.models.gps import GpsInfo
-from pybyd.models.realtime import VehicleRealtimeData
+from pybyd.models.realtime import DoorOpenState, LockState, VehicleRealtimeData
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,32 +162,17 @@ class TestApplyGpsFilters:
 
 
 # ---------------------------------------------------------------------------
-# keep_previous_when_zero (SOC guard)
+# apply_realtime_filters – zero-drop gating for selected numeric fields
 # ---------------------------------------------------------------------------
 
 
-class TestKeepPreviousWhenZero:
-    """SOC zero-spike guard."""
-
-    def test_nonzero_incoming_accepted(self) -> None:
-        assert keep_previous_when_zero(50.0, 48.0) == 48.0
-
-    def test_zero_incoming_with_previous_keeps_previous(self) -> None:
-        assert keep_previous_when_zero(50.0, 0) == 50.0
-
-    def test_zero_incoming_without_previous_returns_zero(self) -> None:
-        assert keep_previous_when_zero(None, 0) == 0
-
-    def test_none_incoming_returns_none(self) -> None:
-        assert keep_previous_when_zero(50.0, None) is None
-
-
-class TestApplyRealtimeZeroSmoothing:
-    """Zero-value smoothing for selected realtime telemetry fields."""
+class TestApplyRealtimeZeroDropGating:
+    """Zero-value drop gating for selected realtime telemetry fields."""
 
     @pytest.mark.parametrize(
         "field_name,previous_value",
         [
+            ("elec_percent", 73.0),
             ("left_front_tire_pressure", 2.4),
             ("right_front_tire_pressure", 2.5),
             ("left_rear_tire_pressure", 2.6),
@@ -212,6 +196,7 @@ class TestApplyRealtimeZeroSmoothing:
     @pytest.mark.parametrize(
         "field_name",
         [
+            "elec_percent",
             "left_front_tire_pressure",
             "right_front_tire_pressure",
             "left_rear_tire_pressure",
@@ -224,16 +209,17 @@ class TestApplyRealtimeZeroSmoothing:
             "oil_endurance",
         ],
     )
-    def test_zero_incoming_without_previous_kept(self, field_name: str) -> None:
+    def test_zero_incoming_without_previous_dropped(self, field_name: str) -> None:
         incoming = VehicleRealtimeData.model_validate({field_name: 0})
 
         filtered = apply_realtime_filters(None, incoming)
 
-        assert getattr(filtered, field_name) == 0
+        assert getattr(filtered, field_name) is None
 
     @pytest.mark.parametrize(
         "field_name,previous_value,incoming_value",
         [
+            ("elec_percent", 73.0, 72.0),
             ("left_front_tire_pressure", 2.4, 2.3),
             ("right_front_tire_pressure", 2.5, 2.4),
             ("left_rear_tire_pressure", 2.6, 2.5),
@@ -258,3 +244,141 @@ class TestApplyRealtimeZeroSmoothing:
         filtered = apply_realtime_filters(previous, incoming)
 
         assert getattr(filtered, field_name) == incoming_value
+
+
+class TestApplyRealtimeLockZeroDrop:
+    """Door lock fields now follow the same zero-drop policy as numeric fields."""
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_door_lock",
+            "right_front_door_lock",
+            "left_rear_door_lock",
+            "right_rear_door_lock",
+            "sliding_door_lock",
+        ],
+    )
+    def test_missing_incoming_lock_is_not_preserved(self, field_name: str) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: LockState.LOCKED})
+        incoming = VehicleRealtimeData.model_validate({})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) is None
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_door_lock",
+            "right_front_door_lock",
+            "left_rear_door_lock",
+            "right_rear_door_lock",
+            "sliding_door_lock",
+        ],
+    )
+    def test_unavailable_incoming_lock_keeps_previous(self, field_name: str) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: LockState.LOCKED})
+        incoming = VehicleRealtimeData.model_validate({field_name: LockState.UNAVAILABLE})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == LockState.LOCKED
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_door_lock",
+            "right_front_door_lock",
+            "left_rear_door_lock",
+            "right_rear_door_lock",
+            "sliding_door_lock",
+        ],
+    )
+    def test_unavailable_incoming_lock_without_previous_dropped(self, field_name: str) -> None:
+        incoming = VehicleRealtimeData.model_validate({field_name: LockState.UNAVAILABLE})
+
+        filtered = apply_realtime_filters(None, incoming)
+
+        assert getattr(filtered, field_name) is None
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_door_lock",
+            "right_front_door_lock",
+            "left_rear_door_lock",
+            "right_rear_door_lock",
+            "sliding_door_lock",
+        ],
+    )
+    def test_authoritative_incoming_lock_replaces_previous(self, field_name: str) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: LockState.LOCKED})
+        incoming = VehicleRealtimeData.model_validate({field_name: LockState.UNLOCKED})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == LockState.UNLOCKED
+
+
+class TestApplyRealtimeDoorZeroDrop:
+    """Door/trunk/frunk fields follow zero-drop policy for CLOSED (0)."""
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_door",
+            "right_front_door",
+            "left_rear_door",
+            "right_rear_door",
+            "trunk_lid",
+            "sliding_door",
+            "forehold",
+        ],
+    )
+    def test_closed_incoming_door_keeps_previous(self, field_name: str) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: DoorOpenState.OPEN})
+        incoming = VehicleRealtimeData.model_validate({field_name: DoorOpenState.CLOSED})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == DoorOpenState.OPEN
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_door",
+            "right_front_door",
+            "left_rear_door",
+            "right_rear_door",
+            "trunk_lid",
+            "sliding_door",
+            "forehold",
+        ],
+    )
+    def test_closed_incoming_door_without_previous_dropped(self, field_name: str) -> None:
+        incoming = VehicleRealtimeData.model_validate({field_name: DoorOpenState.CLOSED})
+
+        filtered = apply_realtime_filters(None, incoming)
+
+        assert getattr(filtered, field_name) is None
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "left_front_door",
+            "right_front_door",
+            "left_rear_door",
+            "right_rear_door",
+            "trunk_lid",
+            "sliding_door",
+            "forehold",
+        ],
+    )
+    def test_open_incoming_door_replaces_previous(self, field_name: str) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: DoorOpenState.CLOSED})
+        incoming = VehicleRealtimeData.model_validate({field_name: DoorOpenState.OPEN})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == DoorOpenState.OPEN
