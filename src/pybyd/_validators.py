@@ -76,6 +76,17 @@ _ZERO_DROP_FIELD_NAMES: tuple[str, ...] = (
     "oil_endurance",
 )
 
+# Energy consumption fields where the HTTP /getEnergyConsumption endpoint
+# returns the sentinel string "--" (stripped to None) while MQTT vehicleInfo
+# events carry real values. Preserving the last known good value stops
+# HTTP polls from clobbering the MQTT-derived value.
+_PRESERVE_WHEN_NONE_FIELD_NAMES: tuple[str, ...] = (
+    "recent_50km_energy",
+    "total_energy",
+    "total_consumption",
+    "total_consumption_en",
+)
+
 RealtimeFieldFilter = Callable[[str, Any, Any, bool], Any | object]
 """Per-field realtime filter callback.
 
@@ -138,8 +149,23 @@ def _drop_zero_value_filter(
     return _MISSING
 
 
+def _preserve_when_none_filter(
+    _: str,
+    previous_value: Any,
+    incoming_value: Any,
+    incoming_present: bool,
+) -> Any | object:
+    """Preserve previous value when incoming is absent or ``None``."""
+    if previous_value is None:
+        return _MISSING
+    if not incoming_present or incoming_value is None:
+        return previous_value
+    return _MISSING
+
+
 _REALTIME_FIELD_FILTERS: dict[str, tuple[RealtimeFieldFilter, ...]] = {
     **{field_name: (_drop_zero_value_filter,) for field_name in _ZERO_DROP_FIELD_NAMES},
+    **{field_name: (_preserve_when_none_filter,) for field_name in _PRESERVE_WHEN_NONE_FIELD_NAMES},
 }
 
 
