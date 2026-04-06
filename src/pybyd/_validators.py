@@ -53,11 +53,6 @@ _GPS_NULL_ISLAND_THRESHOLD: float = 0.1
 _MISSING: object = object()
 
 _ZERO_DROP_FIELD_NAMES: tuple[str, ...] = (
-    "left_front_door",
-    "right_front_door",
-    "left_rear_door",
-    "right_rear_door",
-    "sliding_door",
     "left_front_door_lock",
     "right_front_door_lock",
     "left_rear_door_lock",
