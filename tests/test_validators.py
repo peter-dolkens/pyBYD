@@ -321,6 +321,69 @@ class TestApplyRealtimeLockZeroDrop:
         assert getattr(filtered, field_name) == LockState.UNLOCKED
 
 
+class TestApplyRealtimePreserveWhenNone:
+    """Preserve previous value when HTTP sentinel strips incoming to None."""
+
+    @pytest.mark.parametrize(
+        "field_name,previous_value",
+        [
+            ("recent_50km_energy", "14.7kW·h/100km"),
+            ("total_energy", "11.1kW·h/100km"),
+            ("total_consumption", "11.1kW·h/100km"),
+            ("total_consumption_en", "11.1kW·h/100km"),
+        ],
+    )
+    def test_sentinel_incoming_with_previous_keeps_previous(
+        self,
+        field_name: str,
+        previous_value: str,
+    ) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: previous_value})
+        incoming = VehicleRealtimeData.model_validate({field_name: "--"})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == previous_value
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "recent_50km_energy",
+            "total_energy",
+            "total_consumption",
+            "total_consumption_en",
+        ],
+    )
+    def test_sentinel_incoming_without_previous_stays_none(self, field_name: str) -> None:
+        incoming = VehicleRealtimeData.model_validate({field_name: "--"})
+
+        filtered = apply_realtime_filters(None, incoming)
+
+        assert getattr(filtered, field_name) is None
+
+    @pytest.mark.parametrize(
+        "field_name,previous_value,incoming_value",
+        [
+            ("recent_50km_energy", "14.7kW·h/100km", "14.9kW·h/100km"),
+            ("total_energy", "11.1kW·h/100km", "11.2kW·h/100km"),
+            ("total_consumption", "11.1kW·h/100km", "11.3kW·h/100km"),
+            ("total_consumption_en", "11.1kW·h/100km", "11.3kW·h/100km"),
+        ],
+    )
+    def test_authoritative_incoming_replaces_previous(
+        self,
+        field_name: str,
+        previous_value: str,
+        incoming_value: str,
+    ) -> None:
+        previous = VehicleRealtimeData.model_validate({field_name: previous_value})
+        incoming = VehicleRealtimeData.model_validate({field_name: incoming_value})
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert getattr(filtered, field_name) == incoming_value
+
+
 class TestApplyRealtimeDoorZeroDrop:
     """Door/trunk/frunk fields follow zero-drop policy for CLOSED (0)."""
 
