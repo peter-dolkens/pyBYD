@@ -15,9 +15,12 @@ from typing import Any
 from pybyd._crypto.aes import aes_decrypt_utf8, aes_encrypt_hex
 from pybyd._crypto.hashing import compute_checkcode, md5_hex, pwd_login_key, sha1_mixed
 from pybyd._crypto.signing import build_sign_string
+from pybyd._version import __version__ as _pybyd_version
 from pybyd.config import BydConfig
 from pybyd.exceptions import BydAuthenticationError
 from pybyd.models.token import AuthToken
+
+_APP_NAME = f"pyBYD+{_pybyd_version}"
 
 _logger = logging.getLogger(__name__)
 
@@ -54,6 +57,8 @@ def build_login_request(config: BydConfig, now_ms: int) -> dict[str, Any]:
     service_time = str(int(time.time() * 1000))
 
     inner: dict[str, str] = {
+        "agreeStatus": "0",
+        "agreementType": "[1,2]",
         "appInnerVersion": config.app_inner_version,
         "appVersion": config.app_version,
         "deviceName": f"{config.device.mobile_brand}{config.device.mobile_model}",
@@ -79,6 +84,7 @@ def build_login_request(config: BydConfig, now_ms: int) -> dict[str, Any]:
     password_md5 = md5_hex(config.password)
     sign_fields: dict[str, str] = {
         **inner,
+        "appName": _APP_NAME,
         "countryCode": config.country_code,
         "functionType": "pwdLogin",
         "identifier": config.username,
@@ -89,6 +95,7 @@ def build_login_request(config: BydConfig, now_ms: int) -> dict[str, Any]:
     sign = sha1_mixed(build_sign_string(sign_fields, password_md5))
 
     outer: dict[str, Any] = {
+        "appName": _APP_NAME,
         "countryCode": config.country_code,
         "encryData": encry_data,
         "functionType": "pwdLogin",
