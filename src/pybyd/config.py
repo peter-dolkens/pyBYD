@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from pybyd._crypto.hashing import md5_hex
+
+_ZERO_IMEI_MD5 = "00000000000000000000000000000000"
 
 
 def _env_bool(value: str | None, default: bool) -> bool:
@@ -39,7 +43,7 @@ class DeviceProfile(BaseModel):
     model: str = "POCO F1"
     sdk: str = "35"
     mod: str = "Xiaomi"
-    imei_md5: str = "00000000000000000000000000000000"
+    imei_md5: str = _ZERO_IMEI_MD5
     mobile_brand: str = "XIAOMI"
     mobile_model: str = "POCO F1"
     device_type: str = "0"
@@ -120,6 +124,14 @@ class BydConfig(BaseModel):
     mqtt_keepalive: int = 120
     mqtt_timeout: float = 10.0
     device: DeviceProfile = Field(default_factory=DeviceProfile)
+
+    @model_validator(mode="after")
+    def _derive_imei_md5(self) -> BydConfig:
+        """Derive imei_md5 from username when no explicit value was provided."""
+        if self.device.imei_md5 == _ZERO_IMEI_MD5:
+            derived = md5_hex(self.username)
+            object.__setattr__(self, "device", self.device.model_copy(update={"imei_md5": derived}))
+        return self
 
     @classmethod
     def from_env(cls, **overrides: Any) -> BydConfig:
