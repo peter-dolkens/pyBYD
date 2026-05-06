@@ -37,6 +37,7 @@ from pybyd._capabilities.windows import WindowsCapability
 from pybyd._state_engine import ProjectionSpec, VehicleSnapshot, VehicleStateEngine
 from pybyd.exceptions import BydRemoteControlError
 from pybyd.models.charging import ChargingStatus
+from pybyd.models.control import ChargeChangeResult
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus
@@ -213,6 +214,18 @@ class BydCar:
         data = await self._client.get_charging_status(self._vin)
         await self._engine.update_charging(data)
         return data
+
+    async def start_charging(self) -> ChargeChangeResult:
+        """Start charging immediately and wait for the toggle to settle.
+
+        Routes through the BydClient ``_trigger_and_poll`` pipeline:
+        prefers the BYD MQTT ``smartCharge`` push for the result and
+        falls back to ``/control/smartCharge/changeResult`` polling.
+
+        Raises :class:`BydRemoteControlError` if the toggle reports
+        failure or doesn't settle within the polling window.
+        """
+        return await self._client.start_charging(self._vin)
 
     async def update_energy(self) -> EnergyConsumption:
         """Fetch fresh energy consumption data and merge into state engine."""

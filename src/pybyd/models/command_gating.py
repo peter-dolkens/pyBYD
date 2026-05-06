@@ -133,6 +133,16 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
             "requiredFunctionNos": ["10300002"],
         }
     ),
+    CommandGateRule.model_validate(
+        {
+            # `1012` is the BYD app's `RESERVATIONCHARGING` capability flag —
+            # the same gate that controls the smart-charging schedule UI.
+            # Cars without it can't accept ``/control/smartCharge/*`` calls.
+            "gateId": "start_charge",
+            "command": RemoteCommand.START_CHARGE,
+            "requiredFunctionNos": ["1012"],
+        }
+    ),
 )
 
 # Seat command requires explicit target selection via control_params.chairType.
