@@ -37,6 +37,13 @@ class RemoteCommand(enum.StrEnum):
     CLOSE_WINDOWS = "CLOSEWINDOW"
     SEAT_CLIMATE = "VENTILATIONHEATING"
     BATTERY_HEAT = "BATTERYHEAT"
+    # `START_CHARGE` is a synthetic value (never sent on the wire as a
+    # `commandType`).  The on-the-wire smart-charging "start" toggle goes via
+    # `/control/smartCharge/changeChargeStatue` with ``status: "1"`` rather
+    # than `/control/remoteControl`.  We add the enum member so the gating
+    # table can express the `functionNo` requirement (``1012``) for callers
+    # that introspect command availability.
+    START_CHARGE = "SMARTCHARGESTART"
 
 
 class ControlState(enum.IntEnum):
@@ -104,6 +111,7 @@ class CommandAck(BydBaseModel):
 
     vin: str = ""
     result: str | None = None
+    request_serial: str | None = Field(default=None, validation_alias="requestSerial")
 
     @model_validator(mode="before")
     @classmethod
@@ -114,6 +122,36 @@ class CommandAck(BydBaseModel):
         r = values.get("result")
         if r is not None and not isinstance(r, str):
             values = {**values, "result": None}
+        return values
+
+
+class ChargeChangeResult(BydBaseModel):
+    """Terminal result of ``/control/smartCharge/changeChargeStatue``.
+
+    Returned by :meth:`BydClient.start_charging` once the change has settled
+    — either via the MQTT ``smartCharge`` push that BYD's cloud sends back,
+    or via the ``/control/smartCharge/changeResult`` HTTP poll fallback.
+
+    See ``references/changeResult.md`` for the captured payload shape.
+    """
+
+    vin: str = ""
+    res: int | None = None
+    """BYD ``res`` code: ``1`` = pending (still in progress, keep polling),
+    ``2`` = success (terminal), other values (e.g. ``3``) = failure."""
+    message: str | None = None
+    """Locale-dependent human-readable message (e.g. ``"Operation
+    successful"``).  Use :attr:`res` for branching, not this string."""
+    request_serial: str | None = Field(default=None, validation_alias="requestSerial")
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _capture_raw(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        if "raw" not in values:
+            values = {**values, "raw": {k: v for k, v in values.items() if k != "raw"}}
         return values
 
 
