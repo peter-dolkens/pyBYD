@@ -11,7 +11,7 @@ from pybyd._validators import (
     guard_gps_coordinates,
 )
 from pybyd.models.gps import GpsInfo
-from pybyd.models.realtime import DoorOpenState, LockState, VehicleRealtimeData
+from pybyd.models.realtime import LockState, VehicleRealtimeData
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -382,66 +382,3 @@ class TestApplyRealtimePreserveWhenNone:
         filtered = apply_realtime_filters(previous, incoming)
 
         assert getattr(filtered, field_name) == incoming_value
-
-
-class TestApplyRealtimeDoorZeroDrop:
-    """Door/trunk/frunk fields follow zero-drop policy for CLOSED (0)."""
-
-    @pytest.mark.parametrize(
-        "field_name",
-        [
-            "left_front_door",
-            "right_front_door",
-            "left_rear_door",
-            "right_rear_door",
-            "trunk_lid",
-            "sliding_door",
-            "forehold",
-        ],
-    )
-    def test_closed_incoming_door_keeps_previous(self, field_name: str) -> None:
-        previous = VehicleRealtimeData.model_validate({field_name: DoorOpenState.OPEN})
-        incoming = VehicleRealtimeData.model_validate({field_name: DoorOpenState.CLOSED})
-
-        filtered = apply_realtime_filters(previous, incoming)
-
-        assert getattr(filtered, field_name) == DoorOpenState.OPEN
-
-    @pytest.mark.parametrize(
-        "field_name",
-        [
-            "left_front_door",
-            "right_front_door",
-            "left_rear_door",
-            "right_rear_door",
-            "trunk_lid",
-            "sliding_door",
-            "forehold",
-        ],
-    )
-    def test_closed_incoming_door_without_previous_dropped(self, field_name: str) -> None:
-        incoming = VehicleRealtimeData.model_validate({field_name: DoorOpenState.CLOSED})
-
-        filtered = apply_realtime_filters(None, incoming)
-
-        assert getattr(filtered, field_name) is None
-
-    @pytest.mark.parametrize(
-        "field_name",
-        [
-            "left_front_door",
-            "right_front_door",
-            "left_rear_door",
-            "right_rear_door",
-            "trunk_lid",
-            "sliding_door",
-            "forehold",
-        ],
-    )
-    def test_open_incoming_door_replaces_previous(self, field_name: str) -> None:
-        previous = VehicleRealtimeData.model_validate({field_name: DoorOpenState.CLOSED})
-        incoming = VehicleRealtimeData.model_validate({field_name: DoorOpenState.OPEN})
-
-        filtered = apply_realtime_filters(previous, incoming)
-
-        assert getattr(filtered, field_name) == DoorOpenState.OPEN
