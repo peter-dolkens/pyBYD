@@ -105,6 +105,41 @@ def _make_realtime_fetcher(energy_type: str):  # type: ignore[no-untyped-def]
 
     return fetch
 
+
+def _make_energy_fetcher(power_type: str, auto_model_name: str | None):  # type: ignore[no-untyped-def]
+    """Return a getEnergyConsumption fetcher mirroring the BYD app's request shape.
+
+    The BYD app sends ``powerType`` + ``requestType: 0`` + ``autoModelNameOut``
+    on this endpoint. pyBYD's ``fetch_energy_consumption`` currently sends
+    none of these. This fetcher mirrors the app to surface response-format
+    differences.
+    """
+
+    async def fetch(
+        endpoint, config, session, transport, vin, request_serial=None,
+    ):
+        now_ms = int(time.time() * 1000)
+        inner: dict[str, Any] = dict(build_inner_base(config, now_ms=now_ms, vin=vin))
+        inner["powerType"] = power_type
+        inner["requestType"] = 0  # BYD app sends int, not string
+        if auto_model_name:
+            inner["autoModelNameOut"] = auto_model_name
+        _LAST_INNER.clear()
+        _LAST_INNER.update(inner)
+        decoded = await post_token_json(
+            endpoint=endpoint,
+            config=config,
+            session=session,
+            transport=transport,
+            inner=inner,
+            now_ms=now_ms,
+            vin=vin,
+            not_supported_codes=ENDPOINT_NOT_SUPPORTED_CODES,
+        )
+        return (decoded if isinstance(decoded, dict) else {}), None
+
+    return fetch
+
 # AU defaults that are non-secret but not in BydConfig.from_env defaults.
 _DEFAULTS = {
     "BYD_COUNTRY_CODE": "AU",
@@ -124,22 +159,30 @@ _DEFAULTS = {
     "BYD_MOD": "Xiaomi",
 }
 
-# (label, trigger_endpoint, fetch_fn). The realtime fetcher is built per-run
-# so ``--energy-type`` can override the value baked into pybyd._api.realtime.
+# (label, trigger_endpoint, fetch_fn). The realtime/energy fetchers are built
+# per-run so ``--energy-type`` can override the values baked into the library.
 _GPS_TRIGGER = ("/control/getGpsInfo", fetch_gps_endpoint)
 
 
-def _build_triggers(energy_type: str) -> dict[str, tuple[str, Any]]:
+def _build_triggers(
+    energy_type: str,
+    power_type: str,
+    auto_model_name: str | None,
+) -> dict[str, tuple[str, Any]]:
     return {
         "realtime": (
             "/vehicleInfo/vehicle/vehicleRealTimeRequest",
             _make_realtime_fetcher(energy_type),
         ),
         "gps": _GPS_TRIGGER,
+        "energy": (
+            "/vehicleInfo/vehicle/getEnergyConsumption",
+            _make_energy_fetcher(power_type, auto_model_name),
+        ),
     }
 
 
-_TRIGGERS_KEYS = ("realtime", "gps")
+_TRIGGERS_KEYS = ("realtime", "gps", "energy")
 
 
 def _section(title: str) -> None:
@@ -291,7 +334,10 @@ async def run(args: argparse.Namespace) -> int:
     unknown = [t for t in triggers if t not in _TRIGGERS_KEYS]
     if unknown:
         raise SystemExit(f"Unknown trigger(s): {unknown}. Choose from {list(_TRIGGERS_KEYS)}.")
-    triggers_map = _build_triggers(args.energy_type)
+    # ``--power-type`` defaults to ``--energy-type`` since we currently assume
+    # they share the same per-vehicle classifier (no capture has shown them
+    # diverging). Use ``--power-type`` to override independently.
+    power_type = args.power_type if args.power_type is not None else args.energy_type
 
     async with BydClient(config) as client:
         _section("LOGIN")
@@ -308,7 +354,18 @@ async def run(args: argparse.Namespace) -> int:
         for v in vehicles:
             print(f"  {v.vin}  ({getattr(v, 'name', '') or getattr(v, 'model_name', '')})")
         vin = args.vin or vehicles[0].vin
+        target = next((v for v in vehicles if v.vin == vin), vehicles[0])
+        auto_model_name = (
+            args.auto_model_name
+            or target.model_name
+            or target.out_model_type
+            or None
+        )
         print(f"  → using VIN: {vin}")
+        if "energy" in triggers:
+            print(f"  energy.powerType         : {power_type!r}")
+            print(f"  energy.autoModelNameOut  : {auto_model_name!r}")
+        triggers_map = _build_triggers(args.energy_type, power_type, auto_model_name)
 
         transport = client._require_transport()  # noqa: SLF001
         bootstrap = await fetch_mqtt_bootstrap(config, session, transport)
@@ -409,6 +466,16 @@ def main() -> None:
         "--energy-type",
         default="0",
         help="Override realtime trigger 'energyType' field (pyBYD default: 0; BYD app sends 2)",
+    )
+    parser.add_argument(
+        "--power-type",
+        default=None,
+        help="Override 'powerType' on the energy trigger (defaults to --energy-type)",
+    )
+    parser.add_argument(
+        "--auto-model-name",
+        default=None,
+        help="Override 'autoModelNameOut' on the energy trigger (defaults to Vehicle.model_name)",
     )
     parser.add_argument(
         "--captures-root",
