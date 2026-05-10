@@ -1086,6 +1086,35 @@ class BydClient:
         """Fetch charging status."""
         return await self._authed_call(_charging_api.fetch_charging_status, vin)
 
+    async def get_charging_schedule(self, vin: str) -> SmartChargingSchedule:
+        """Fetch the configured smart-charging schedule.
+
+        Reads ``/control/smartCharge/homePage`` and parses the nested
+        ``smartChargeDto`` / ``smartJourneyDto`` blocks into a
+        :class:`SmartChargingSchedule`.
+        """
+        return await self._authed_call(_smart_api.fetch_charging_schedule, vin)
+
+    async def get_charging_homepage(
+        self,
+        vin: str,
+    ) -> tuple[ChargingStatus, SmartChargingSchedule]:
+        """Fetch live charging state + schedule from one homePage call.
+
+        The cloud returns both views in a single payload, so callers
+        that want a "force refresh" of every charging-related field
+        (e.g. after editing the schedule, or on integration startup)
+        can spend a single HTTP round-trip instead of two.
+
+        :class:`ChargingStatus` continues to also arrive via MQTT pushes
+        — this combined call exists alongside, not in place of, the
+        push path.
+        """
+        raw = await self._authed_call(_charging_api.fetch_charging_homepage, vin)
+        status = ChargingStatus.model_validate(raw)
+        schedule = SmartChargingSchedule.model_validate({"vin": vin, **raw})
+        return status, schedule
+
     async def get_energy_consumption(self, vin: str) -> EnergyConsumption:
         """Fetch energy consumption data.
 
@@ -1341,36 +1370,75 @@ class BydClient:
     async def save_charging_schedule(
         self,
         vin: str,
-        schedule: SmartChargingSchedule,
-    ) -> CommandAck:
-        """Save a smart charging schedule."""
-        if (
-            schedule.target_soc is None
-            or schedule.start_hour is None
-            or schedule.start_minute is None
-            or schedule.end_hour is None
-            or schedule.end_minute is None
-        ):
-            raise ValueError("SmartChargingSchedule must have all time fields set")
-        target_soc = schedule.target_soc
-        start_hour = schedule.start_hour
-        start_minute = schedule.start_minute
-        end_hour = schedule.end_hour
-        end_minute = schedule.end_minute
+        *,
+        start_charge_time: str,
+        end_charge_time: str,
+        charge_way: str,
+        enabled: bool = True,
+        mqtt_timeout: float | None = None,
+        poll_attempts: int = 6,
+        poll_interval: float = 2.0,
+    ) -> ChargeChangeResult:
+        """Save a smart-charging schedule and wait for the toggle to settle.
 
-        async def _call() -> CommandAck:
-            session = await self.ensure_session()
-            transport = self._require_transport()
-            return await _smart_api.save_charging_schedule(
-                self._config,
-                session,
-                transport,
-                vin,
-                target_soc=target_soc,
-                start_hour=start_hour,
-                start_minute=start_minute,
-                end_hour=end_hour,
-                end_minute=end_minute,
+        Wire format mirrors the BYD-app ``saveOrUpdate`` capture.  Times
+        are ``"HH:MM"`` strings; ``end_charge_time`` may also be the
+        sentinel ``"full"`` (charge until full within the window).
+        ``charge_way`` selects the repeat: ``"s"`` single, ``"e"`` every
+        day, or comma-separated weekday indices like ``"0,1,2,3,4"``
+        (``0`` = Monday).
+
+        Gates on ``functionNo "1012"`` (BYD's ``RESERVATIONCHARGING``
+        capability flag — the same gate ``start_charging`` uses, since
+        cars without it can't accept any ``/control/smartCharge/*``
+        call).  Routes through :meth:`_trigger_and_poll`: triggers
+        ``saveOrUpdate``, then prefers an MQTT ``smartCharge`` push for
+        the result and falls back to ``changeResult`` HTTP polling.
+        Returns the terminal :class:`ChargeChangeResult` (``res == 2``)
+        or raises :class:`BydRemoteControlError` for terminal failure /
+        timeout.
+        """
+        capabilities = await self.get_vehicle_capabilities(vin)
+        gate = evaluate_command_gate(RemoteCommand.START_CHARGE, capabilities)
+        if not gate.supported:
+            raise BydEndpointNotSupportedError(
+                (f"save_charging_schedule blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
+                code="command_gate_blocked",
+                endpoint="/control/smartCharge/saveOrUpdate",
+            )
+
+        async def _call() -> ChargeChangeResult:
+            result = await self._trigger_and_poll(
+                vin=vin,
+                trigger_endpoint="/control/smartCharge/saveOrUpdate",
+                poll_endpoint="/control/smartCharge/changeResult",
+                fetch_fn=_smart_api.make_save_charging_schedule_fetch_fn(
+                    start_charge_time=start_charge_time,
+                    end_charge_time=end_charge_time,
+                    charge_way=charge_way,
+                    enabled=enabled,
+                ),
+                is_ready=_smart_api.is_charge_change_ready,
+                model_cls=ChargeChangeResult,
+                label="SaveChargingSchedule",
+                mqtt_event_type="smartCharge",
+                mqtt_timeout=mqtt_timeout,
+                poll_attempts=poll_attempts,
+                poll_interval=poll_interval,
+            )
+            res = result.res
+            if res == 2:
+                return result
+            if res is None:
+                raise BydRemoteControlError(
+                    ("smartCharge saveOrUpdate timed out without a terminal " "result"),
+                    code="timeout",
+                    endpoint="/control/smartCharge/changeResult",
+                )
+            raise BydRemoteControlError(
+                (f"smartCharge saveOrUpdate rejected by cloud (res={res}, " f"message={result.message!r})"),
+                code=str(res),
+                endpoint="/control/smartCharge/changeResult",
             )
 
         return await self._call_with_reauth(_call)
