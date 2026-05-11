@@ -12,6 +12,7 @@ from pybyd._validators import (
 )
 from pybyd.models.gps import GpsInfo
 from pybyd.models.realtime import LockState, VehicleRealtimeData
+from pybyd.models.vehicle import EnergyType
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -382,3 +383,320 @@ class TestApplyRealtimePreserveWhenNone:
         filtered = apply_realtime_filters(previous, incoming)
 
         assert getattr(filtered, field_name) == incoming_value
+
+
+# ---------------------------------------------------------------------------
+# Hybrid leg splitting (energy_type-aware parsing)
+# ---------------------------------------------------------------------------
+
+
+class TestEnergyTypeLegSplit:
+    """VehicleRealtimeData parses combined consumption strings into _ev/_fuel
+    sub-fields, branching on the energy_type validation context."""
+
+    def test_et0_ev_only(self) -> None:
+        m = VehicleRealtimeData.model_validate(
+            {
+                "energyConsumption": "6.1",
+                "nearestEnergyConsumption": "6.1",
+                "nearestEnergyConsumptionUnit": "kW·h/100km",
+                "recent50kmEnergy": "6.1kW·h/100km",
+                "totalEnergy": "19.7kW·h/100km",
+                "totalConsumptionEn": "19.7kW·h/100km",
+            },
+            context={"energy_type": EnergyType.EV},
+        )
+        assert m.energy_consumption_ev == 6.1
+        assert m.energy_consumption_fuel is None
+        assert m.nearest_energy_consumption_ev == 6.1
+        assert m.nearest_energy_consumption_fuel is None
+        assert m.recent_50km_energy_ev == 6.1
+        assert m.recent_50km_energy_fuel is None
+        assert m.total_energy_ev == 19.7
+        assert m.total_energy_fuel is None
+        assert m.total_consumption_en_ev == 19.7
+        assert m.total_consumption_en_fuel is None
+
+    def test_et1_fuel_only_routes_bare_numbers_to_fuel(self) -> None:
+        m = VehicleRealtimeData.model_validate(
+            {
+                "energyConsumption": "8.4",
+                "totalConsumptionEn": "3.5L/100km",
+            },
+            context={"energy_type": EnergyType.ICE},
+        )
+        assert m.energy_consumption_ev is None
+        assert m.energy_consumption_fuel == 8.4
+        assert m.total_consumption_en_ev is None
+        assert m.total_consumption_en_fuel == 3.5
+
+    def test_et2_combined_splits_both_legs(self) -> None:
+        m = VehicleRealtimeData.model_validate(
+            {
+                "energyConsumption": "6.1+8.4",
+                "recent50kmEnergy": "6.1kW·h/100km+8.4L/100km",
+                "totalEnergy": "19.7kW·h/100km+3.5L/100km",
+                "totalConsumptionEn": "(19.7kW·h+3.5L)/100km",
+            },
+            context={"energy_type": EnergyType.HYBRID},
+        )
+        assert (m.energy_consumption_ev, m.energy_consumption_fuel) == (6.1, 8.4)
+        assert (m.recent_50km_energy_ev, m.recent_50km_energy_fuel) == (6.1, 8.4)
+        assert (m.total_energy_ev, m.total_energy_fuel) == (19.7, 3.5)
+        assert (m.total_consumption_en_ev, m.total_consumption_en_fuel) == (19.7, 3.5)
+
+    def test_et2_nearest_uses_unit_field_to_classify(self) -> None:
+        """At energy_type=2 the cloud returns a single-leg petrol value here;
+        the unit field 'L/100km' is the authoritative classifier."""
+        m = VehicleRealtimeData.model_validate(
+            {
+                "nearestEnergyConsumption": "10.1",
+                "nearestEnergyConsumptionUnit": "L/100km",
+            },
+            context={"energy_type": EnergyType.HYBRID},
+        )
+        assert m.nearest_energy_consumption_ev is None
+        assert m.nearest_energy_consumption_fuel == 10.1
+
+    def test_no_context_defaults_to_ev(self) -> None:
+        """Bare numeric without context falls back to EV (preserves
+        backwards-compatible behaviour for callers not passing context)."""
+        m = VehicleRealtimeData.model_validate({"energyConsumption": "6.1"})
+        assert m.energy_consumption_ev == 6.1
+        assert m.energy_consumption_fuel is None
+
+    def test_sentinel_value_yields_no_legs(self) -> None:
+        m = VehicleRealtimeData.model_validate(
+            {"energyConsumption": "--"},
+            context={"energy_type": EnergyType.HYBRID},
+        )
+        assert m.energy_consumption_ev is None
+        assert m.energy_consumption_fuel is None
+
+    def test_unit_companion_strings_populated(self) -> None:
+        """Each per-leg float has a parallel ``_unit`` string."""
+        m = VehicleRealtimeData.model_validate(
+            {
+                "energyConsumption": "6.1+8.4",
+                "totalEnergy": "19.7kW·h/100km+3.5L/100km",
+                "totalConsumptionEn": "(19.7kW·h+3.5L)/100km",
+                "totalConsumption": "(19.7度+3.5升)/百公里",
+            },
+            context={"energy_type": EnergyType.HYBRID},
+        )
+        assert m.energy_consumption_ev_unit == "kWh/100km"
+        assert m.energy_consumption_fuel_unit == "L/100km"
+        assert m.total_energy_ev_unit == "kWh/100km"
+        assert m.total_energy_fuel_unit == "L/100km"
+        assert m.total_consumption_en_ev_unit == "kWh/100km"
+        assert m.total_consumption_en_fuel_unit == "L/100km"
+        assert m.total_consumption_ev_unit == "度/百公里"
+        assert m.total_consumption_fuel_unit == "升/百公里"
+
+    def test_legacy_field_aliases_to_ev_portion(self) -> None:
+        """The legacy non-suffixed string field is rebound to the
+        EV-portion of the original combined string for backwards compat;
+        the full combined string remains in ``raw``."""
+        m = VehicleRealtimeData.model_validate(
+            {
+                "energyConsumption": "6.1+8.4",
+                "totalEnergy": "19.7kW·h/100km+3.5L/100km",
+                "totalConsumptionEn": "(19.7kW·h+3.5L)/100km",
+            },
+            context={"energy_type": EnergyType.HYBRID},
+        )
+        # Legacy aliases hold the EV-portion only
+        assert m.energy_consumption == "6.1"
+        assert m.total_energy == "19.7kW·h/100km"
+        assert m.total_consumption_en == "19.7kW·h/100km"
+        # Original combined strings preserved in raw
+        assert m.raw["energyConsumption"] == "6.1+8.4"
+        assert m.raw["totalConsumptionEn"] == "(19.7kW·h+3.5L)/100km"
+
+    def test_et2_nearest_derives_per_leg_from_energy_consumption(self) -> None:
+        """At energy_type=2, ``nearestEnergyConsumption`` carries the
+        equivalent-petrol number (matches ``avgEqOilConsumption`` in
+        getEnergyConsumption). The actual per-leg nearest averages are
+        packed into ``energyConsumption`` (`"6.1+8.4"`), and the parser
+        surfaces those into ``nearest_energy_consumption_ev/_fuel`` so
+        backwards-compat is preserved (legacy alias picks up the EV leg)."""
+        m = VehicleRealtimeData.model_validate(
+            {
+                "energyConsumption": "6.1+8.4",
+                "nearestEnergyConsumption": "10.1",
+                "nearestEnergyConsumptionUnit": "L/100km",
+            },
+            context={"energy_type": EnergyType.HYBRID},
+        )
+        # Per-leg fields derive from energyConsumption, not the eq-oil number
+        assert m.nearest_energy_consumption_ev == 6.1
+        assert m.nearest_energy_consumption_ev_unit == "kWh/100km"
+        assert m.nearest_energy_consumption_fuel == 8.4
+        assert m.nearest_energy_consumption_fuel_unit == "L/100km"
+        # Legacy alias matches the et=0 EV-value behaviour
+        assert m.nearest_energy_consumption == "6.1"
+        assert m.nearest_energy_consumption_unit == "kWh/100km"
+        # Eq-petrol value still recoverable via raw
+        assert m.raw["nearestEnergyConsumption"] == "10.1"
+
+    def test_et2_nearest_falls_back_to_fuel_when_no_energy_consumption(self) -> None:
+        """If energyConsumption is missing (degenerate hybrid response), the
+        legacy alias falls back to the petrol leg via the existing rule."""
+        m = VehicleRealtimeData.model_validate(
+            {
+                "nearestEnergyConsumption": "10.1",
+                "nearestEnergyConsumptionUnit": "L/100km",
+            },
+            context={"energy_type": EnergyType.HYBRID},
+        )
+        assert m.nearest_energy_consumption_ev is None
+        assert m.nearest_energy_consumption_fuel == 10.1
+        assert m.nearest_energy_consumption == "10.1"
+        assert m.nearest_energy_consumption_unit == "L/100km"
+
+    def test_legacy_alias_does_not_fall_back_for_pure_ice(self) -> None:
+        """Pure-ICE vehicles (energy_type=1) keep legacy aliases as None —
+        their petrol data is exposed exclusively via _fuel fields."""
+        m = VehicleRealtimeData.model_validate(
+            {"energyConsumption": "8.4"},
+            context={"energy_type": EnergyType.ICE},
+        )
+        assert m.energy_consumption_fuel == 8.4
+        assert m.energy_consumption is None
+
+
+# ---------------------------------------------------------------------------
+# EnergyConsumption — getEnergyConsumption response parsing
+# ---------------------------------------------------------------------------
+
+
+from pybyd.models.energy import EnergyConsumption  # noqa: E402
+
+
+class TestEnergyConsumptionParsing:
+    """Parse the four-section getEnergyConsumption response.
+
+    Fixtures mirror the real captures in
+    captures/logs_decrypted/force_energy_{0,1,2}/.
+    """
+
+    PT0_RAW = {
+        "selfGraph": {
+            "energyConsumption": ["8.3", "8.4", "8.0", "8.0", "8.7", "10.1", "6.1"],
+            "energyConsumptionUnit": "kWh/100km",
+        },
+        "cumulativeEnergyConsumption": {
+            "mileageUnit": "km",
+            "evUnit": "kWh/100km",
+            "avgOilConsumption": "--",
+            "avgEvConsumption": "19.7",
+            "oilUnit": "--",
+            "totalMileage": "443",
+        },
+        "time": 1778212356,
+        "nearestEnergyConsumption": {
+            "driveDistribution": "99",
+            "otherDistribution": "0",
+            "evConsumption": "3.05",
+            "electDistribution": "1",
+            "avgOilConsumption": "--",
+            "evValueUnit": "kW·h",
+            "airDistribution": "0",
+            "avgEvConsumption": "6.1",
+            "avgEqOilConsumption": "--",
+            "oilUnit": "--",
+            "evUnit": "kWh/100km",
+            "oilConsumption": "--",
+            "oilValueUnit": "--",
+        },
+        "autoModelGraph": {
+            "energyConsumption": ["0", "0", "0", "0", "0", "0", "0"],
+            "energyConsumptionUnit": "kWh/100km",
+        },
+    }
+
+    PT2_RAW = {
+        "selfGraph": {
+            "energyConsumption": ["8.3", "8.4", "8.0", "8.0", "8.7", "10.1", "10.1"],
+            "energyConsumptionUnit": "L/100km",
+        },
+        "cumulativeEnergyConsumption": {
+            "mileageUnit": "km",
+            "evUnit": "kWh/100km",
+            "avgOilConsumption": "3.5",
+            "avgEvConsumption": "19.7",
+            "oilUnit": "L/100km",
+            "totalMileage": "443",
+        },
+        "time": 1778212356,
+        "nearestEnergyConsumption": {
+            "driveDistribution": "99",
+            "otherDistribution": "0",
+            "evConsumption": "3.05",
+            "electDistribution": "1",
+            "avgOilConsumption": "8.4",
+            "evValueUnit": "kW·h",
+            "airDistribution": "0",
+            "avgEvConsumption": "6.1",
+            "avgEqOilConsumption": "10.1",
+            "oilUnit": "L/100km",
+            "evUnit": "kWh/100km",
+            "oilConsumption": "4.2",
+            "oilValueUnit": "L",
+        },
+        "autoModelGraph": {
+            "energyConsumption": ["8.3", "8.3", "8.3", "8.2", "8.2", "8.4", "8.4"],
+            "energyConsumptionUnit": "L/100km",
+        },
+    }
+
+    def test_pt0_ev_view(self) -> None:
+        m = EnergyConsumption.model_validate(self.PT0_RAW)
+        assert m.self_graph is not None
+        assert m.self_graph.energy_consumption == [8.3, 8.4, 8.0, 8.0, 8.7, 10.1, 6.1]
+        assert m.self_graph.energy_consumption_unit == "kWh/100km"
+        assert m.cumulative_energy_consumption is not None
+        assert m.cumulative_energy_consumption.avg_ev_consumption == 19.7
+        assert m.cumulative_energy_consumption.avg_oil_consumption is None
+        assert m.cumulative_energy_consumption.total_mileage == 443.0
+        assert m.nearest_energy_consumption is not None
+        assert m.nearest_energy_consumption.avg_ev_consumption == 6.1
+        assert m.nearest_energy_consumption.ev_consumption == 3.05
+        assert m.nearest_energy_consumption.avg_oil_consumption is None
+        assert m.nearest_energy_consumption.drive_distribution == 99
+        assert m.nearest_energy_consumption.elect_distribution == 1
+        assert m.timestamp is not None
+
+    def test_pt2_hybrid_view(self) -> None:
+        m = EnergyConsumption.model_validate(self.PT2_RAW)
+        c = m.cumulative_energy_consumption
+        assert c is not None
+        assert c.avg_ev_consumption == 19.7
+        assert c.avg_oil_consumption == 3.5
+        assert c.ev_unit == "kWh/100km"
+        assert c.oil_unit == "L/100km"
+        n = m.nearest_energy_consumption
+        assert n is not None
+        assert (n.avg_ev_consumption, n.avg_oil_consumption) == (6.1, 8.4)
+        assert (n.ev_consumption, n.oil_consumption) == (3.05, 4.2)
+        assert n.avg_eq_oil_consumption == 10.1
+        g = m.auto_model_graph
+        assert g is not None
+        assert g.energy_consumption == [8.3, 8.3, 8.3, 8.2, 8.2, 8.4, 8.4]
+
+    def test_sentinel_strings_become_none(self) -> None:
+        """`"--"` numeric sentinels become None on the parsed fields."""
+        m = EnergyConsumption.model_validate(
+            {"cumulativeEnergyConsumption": {"avgOilConsumption": "--", "avgEvConsumption": "--"}}
+        )
+        assert m.cumulative_energy_consumption is not None
+        assert m.cumulative_energy_consumption.avg_ev_consumption is None
+        assert m.cumulative_energy_consumption.avg_oil_consumption is None
+
+    def test_empty_payload_yields_empty_sections(self) -> None:
+        m = EnergyConsumption.model_validate({})
+        assert m.self_graph is None
+        assert m.cumulative_energy_consumption is None
+        assert m.nearest_energy_consumption is None
+        assert m.auto_model_graph is None
+        assert m.timestamp is None

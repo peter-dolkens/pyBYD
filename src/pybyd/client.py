@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -63,7 +64,7 @@ from pybyd.models.latest_config import VehicleCapabilities, VehicleLatestConfig
 from pybyd.models.push_notification import PushNotificationState
 from pybyd.models.realtime import VehicleRealtimeData
 from pybyd.models.smart_charging import SmartChargingSchedule
-from pybyd.models.vehicle import Vehicle
+from pybyd.models.vehicle import EnergyType, Vehicle
 from pybyd.session import Session
 
 if TYPE_CHECKING:
@@ -155,6 +156,10 @@ class BydClient:
         self._cars: dict[str, BydCar] = {}
         # Per-VIN normalized capability availability.
         self._vehicle_capabilities: dict[str, VehicleCapabilities] = {}
+        # Per-VIN Vehicle metadata cache. Populated as a side effect of
+        # get_vehicles(). Used to resolve per-vehicle attributes like
+        # energyType without an extra round trip on every realtime call.
+        self._vehicle_metadata_by_vin: dict[str, Vehicle] = {}
         # Whether remote commands are enabled (set by verify_command_access).
         self._commands_enabled: bool = False
 
@@ -520,8 +525,17 @@ class BydClient:
         # --- 2) vehicleInfo callback for on_vehicle_info + BydCar routing ---
         if event.event == "vehicleInfo" and event.vin:
             realtime_parsed: VehicleRealtimeData | None = None
+            cached_vehicle = self._vehicle_metadata_by_vin.get(event.vin)
+            energy_type = (
+                cached_vehicle.energy_type
+                if cached_vehicle is not None and cached_vehicle.energy_type is not EnergyType.UNKNOWN
+                else EnergyType.EV
+            )
             try:
-                realtime_parsed = VehicleRealtimeData.model_validate(respond_data)
+                realtime_parsed = VehicleRealtimeData.model_validate(
+                    respond_data,
+                    context={"energy_type": energy_type},
+                )
             except Exception:
                 _logger.debug("Failed to parse MQTT vehicleInfo", exc_info=True)
 
@@ -750,6 +764,7 @@ class BydClient:
         poll_attempts: int = 10,
         poll_interval: float = 1.5,
         signal_retries: int = 2,
+        validate_context: dict[str, Any] | None = None,
     ) -> _M:
         """Generic trigger → MQTT wait → HTTP poll fallback.
 
@@ -782,10 +797,10 @@ class BydClient:
         merged_latest = trigger_info if isinstance(trigger_info, dict) else {}
 
         if isinstance(trigger_info, dict) and is_ready(trigger_info):
-            return model_cls.model_validate(merged_latest)
+            return model_cls.model_validate(merged_latest, context=validate_context)
 
         if not serial:
-            return model_cls.model_validate(merged_latest)
+            return model_cls.model_validate(merged_latest, context=validate_context)
 
         # Register the serial so _on_mqtt_event can distinguish data-poll
         # responses from genuine remote-control command acks.
@@ -801,7 +816,7 @@ class BydClient:
             )
             if isinstance(mqtt_raw, dict) and is_ready(mqtt_raw):
                 _logger.debug("%s data received via MQTT for vin=%s", label, vin)
-                return model_cls.model_validate(mqtt_raw)
+                return model_cls.model_validate(mqtt_raw, context=validate_context)
 
             # Check if MQTT delivered a definitive "data unavailable" error
             # (e.g. code 6051 = no GPS signal).  Skip HTTP polling entirely.
@@ -815,7 +830,7 @@ class BydClient:
                         mqtt_code,
                         vin,
                     )
-                    return model_cls.model_validate(merged_latest)
+                    return model_cls.model_validate(merged_latest, context=validate_context)
 
             # Phase 3: HTTP poll fallback
             _logger.debug("MQTT timeout; falling back to HTTP polling for %s vin=%s", label, vin)
@@ -861,13 +876,32 @@ class BydClient:
                     consecutive_unavailable = 0  # reset — different error type
                     _logger.debug("%s poll attempt=%d failed", label, attempt, exc_info=True)
 
-            return model_cls.model_validate(merged_latest)
+            return model_cls.model_validate(merged_latest, context=validate_context)
         finally:
             self._data_poll_serials.discard(trigger_serial)
 
     async def get_vehicles(self) -> list[Vehicle]:
         """Fetch all vehicles associated with the account."""
-        return await self._authed_call(_vehicle_api.fetch_vehicle_list)
+        vehicles = await self._authed_call(_vehicle_api.fetch_vehicle_list)
+        self._vehicle_metadata_by_vin = {v.vin: v for v in vehicles if v.vin}
+        return vehicles
+
+    async def _energy_type_for(self, vin: str) -> EnergyType:
+        """Return the per-vehicle :class:`EnergyType`.
+
+        Reads from the vehicle-metadata cache populated by
+        :meth:`get_vehicles`. On a first-time miss the cache is filled
+        via a single vehicle-list fetch. Falls back to
+        :attr:`EnergyType.EV` (the previous hard-coded value) if the VIN
+        cannot be resolved.
+        """
+        cached = self._vehicle_metadata_by_vin.get(vin)
+        if cached is None:
+            await self.get_vehicles()
+            cached = self._vehicle_metadata_by_vin.get(vin)
+        if cached is not None and cached.energy_type is not EnergyType.UNKNOWN:
+            return cached.energy_type
+        return EnergyType.EV
 
     async def get_car(
         self,
@@ -986,12 +1020,18 @@ class BydClient:
         ``vehicleRealTimeResult`` only if MQTT doesn't deliver in time.
         """
 
+        energy_type = await self._energy_type_for(vin)
+        fetch_fn = functools.partial(
+            _realtime_api.fetch_realtime_endpoint,
+            energy_type=energy_type,
+        )
+
         async def _call() -> VehicleRealtimeData:
             return await self._trigger_and_poll(
                 vin=vin,
                 trigger_endpoint="/vehicleInfo/vehicle/vehicleRealTimeRequest",
                 poll_endpoint="/vehicleInfo/vehicle/vehicleRealTimeResult",
-                fetch_fn=_realtime_api.fetch_realtime_endpoint,
+                fetch_fn=fetch_fn,
                 is_ready=VehicleRealtimeData.is_ready_raw,
                 model_cls=VehicleRealtimeData,
                 label="Realtime",
@@ -1000,6 +1040,7 @@ class BydClient:
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
                 signal_retries=signal_retries,
+                validate_context={"energy_type": energy_type},
             )
 
         return await self._call_with_reauth(_call)
@@ -1046,8 +1087,22 @@ class BydClient:
         return await self._authed_call(_charging_api.fetch_charging_status, vin)
 
     async def get_energy_consumption(self, vin: str) -> EnergyConsumption:
-        """Fetch energy consumption data."""
-        return await self._authed_call(_energy_api.fetch_energy_consumption, vin)
+        """Fetch energy consumption data.
+
+        Sends ``powerType=<vehicle.energy_type>`` and the vehicle's
+        ``outModelType`` (or ``modelName``) as ``autoModelNameOut`` so
+        the cloud returns the per-leg breakdown for hybrids and the
+        ``autoModelGraph`` model-average comparison.
+        """
+        power_type = await self._energy_type_for(vin)
+        cached = self._vehicle_metadata_by_vin.get(vin)
+        auto_model_name = ((cached.out_model_type or cached.model_name) if cached is not None else None) or None
+        return await self._authed_call(
+            _energy_api.fetch_energy_consumption,
+            vin,
+            power_type=power_type,
+            auto_model_name=auto_model_name,
+        )
 
     async def get_push_state(self, vin: str) -> PushNotificationState:
         """Fetch push notification state."""

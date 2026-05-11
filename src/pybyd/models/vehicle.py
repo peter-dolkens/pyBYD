@@ -6,7 +6,23 @@ from typing import ClassVar
 
 from pydantic import Field, model_validator
 
-from pybyd.models._base import BydBaseModel, BydTimestamp
+from pybyd.models._base import BydBaseModel, BydEnum, BydTimestamp
+
+
+class EnergyType(BydEnum):
+    """Vehicle powertrain type.
+
+    Maps to the BYD API's ``energyType`` (per-vehicle attribute) and
+    ``powerType`` (request field on ``getEnergyConsumption``). The cloud
+    transports the value as a string-encoded integer (``"0"`` / ``"1"`` /
+    ``"2"``) — call sites converting to the wire format use
+    ``str(int(value))``.
+    """
+
+    UNKNOWN = -1
+    EV = 0
+    ICE = 1
+    HYBRID = 2
 
 
 class EmpowerRange(BydBaseModel):
@@ -28,7 +44,7 @@ class Vehicle(BydBaseModel):
     vin: str = ""
     model_name: str = ""
     brand_name: str = ""
-    energy_type: str = ""
+    energy_type: EnergyType = EnergyType.UNKNOWN
     auto_alias: str = ""
     auto_plate: str = ""
     pic_main_url: str = ""

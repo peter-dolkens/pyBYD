@@ -41,7 +41,7 @@ from pybyd.models.realtime import (
 )
 from pybyd.models.smart_charging import SmartChargingSchedule
 from pybyd.models.token import AuthToken
-from pybyd.models.vehicle import EmpowerRange, Vehicle
+from pybyd.models.vehicle import EmpowerRange, EnergyType, Vehicle
 
 __all__ = [
     "AirCirculationMode",
@@ -66,6 +66,7 @@ __all__ = [
     "DoorOpenState",
     "EmpowerRange",
     "EnergyConsumption",
+    "EnergyType",
     "GpsInfo",
     "HvacStatus",
     "LatestConfigFunction",

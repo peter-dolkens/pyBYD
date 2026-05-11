@@ -5,10 +5,14 @@ Enum values and field meanings are documented in API_MAPPING.md.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from pydantic import ValidationInfo, model_validator
+
 from pybyd.models._base import COMMON_KEY_ALIASES, BydBaseModel, BydEnum, BydTimestamp, is_negative, is_temp_sentinel
+from pybyd.models.vehicle import EnergyType
 
 # ------------------------------------------------------------------
 # Enums
@@ -152,6 +156,193 @@ class AirCirculationMode(BydEnum):
     UNAVAILABLE = 0
     EXTERNAL = 1
     INTERNAL = 2
+
+
+# ------------------------------------------------------------------
+# Hybrid energy/consumption string splitting
+# ------------------------------------------------------------------
+#
+# Several realtime fields combine EV and ICE data when the per-vehicle
+# ``EnergyType`` is :attr:`EnergyType.HYBRID`. The shape varies per field:
+#
+#     EnergyType.EV                 EnergyType.ICE                    EnergyType.HYBRID (combined)
+#     ─────────────────────────     ─────────────────────────         ──────────────────────────
+#     "6.1"                         "8.4"                             "6.1+8.4"
+#     "6.1kW·h/100km"               "3.5L/100km"                      "6.1kW·h/100km+8.4L/100km"
+#     "19.7kW·h/100km"              "3.5L/100km"                      "(19.7kW·h+3.5L)/100km"
+#     "10.1" (kW·h/100km)           "--"                              "10.1" (L/100km)   ← nearestEnergyConsumption
+#
+# Parsing branches by :class:`EnergyType`:
+#   - EV:     value is single-leg EV
+#   - ICE:    value is single-leg petrol
+#   - HYBRID: value is combined; pull both legs out
+#
+# ``nearestEnergyConsumption`` is special: even at HYBRID the cloud returns
+# a single-leg value, with the unit field disambiguating which leg.
+
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_FUEL_UNIT_RE = re.compile(r"L/100km|升", re.IGNORECASE)
+_EV_UNIT_RE = re.compile(r"kW[·.]?h/100km|度", re.IGNORECASE)
+_SENTINELS = frozenset({"", "--"})
+
+_LegSplit = tuple[str | None, str | None, str | None, str | None]
+
+
+def _first_num(text: str | None) -> float | None:
+    """Extract the first signed decimal in *text* as a float (or None)."""
+    if not text:
+        return None
+    match = _NUM_RE.search(text)
+    return float(match.group()) if match else None
+
+
+def _normalize_unit(text: str | None) -> str | None:
+    """Strip the ``·`` (middle-dot) the BYD cloud injects into unit strings.
+
+    The BYD API sends ``kW·h/100km`` etc.; HA-friendly unit strings drop the
+    middot (``kWh/100km``). Applied to every unit string surfaced from
+    realtime parsing so consumers see a single, normalized form.
+    """
+    if text is None:
+        return None
+    return text.replace("·", "")
+
+
+def _extract_unit(text: str | None) -> str:
+    """Return the substring trailing the leading signed decimal in *text*."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    match = _NUM_RE.match(cleaned)
+    tail = cleaned if match is None else cleaned[match.end() :].strip()
+    return _normalize_unit(tail) or ""
+
+
+def _classify_two_legs(
+    ev_str: str,
+    fuel_str: str,
+    default_ev_unit: str,
+    default_fuel_unit: str,
+) -> _LegSplit:
+    """Annotate two known leg strings with their unit substrings."""
+    ev_unit = _extract_unit(ev_str) or default_ev_unit
+    fuel_unit = _extract_unit(fuel_str) or default_fuel_unit
+    return ev_str, ev_unit, fuel_str, fuel_unit
+
+
+def _split_combined_string(
+    raw: Any,
+    energy_type: EnergyType,
+    *,
+    default_ev_unit: str = "",
+    default_fuel_unit: str = "",
+) -> _LegSplit:
+    """Split a combined-form consumption string into per-leg (value, unit) pairs.
+
+    Returns ``(ev_value, ev_unit, fuel_value, fuel_unit)``. Each value is a
+    string preserving the original format (units inline where the original
+    had them). The unit is the trailing substring after the leading number,
+    falling back to the supplied default for unit-less inputs.
+
+    Handles three combined shapes plus single-leg fallback:
+
+      - ``"(EVform+Fuelform)/<shared-unit>"`` (e.g. ``"(19.7kW·h+3.5L)/100km"``)
+      - ``"EVform+Fuelform"`` with units inline (e.g. ``"6.1kW·h/100km+8.4L/100km"``)
+      - ``"EVform+Fuelform"`` numeric only (e.g. ``"6.1+8.4"``)
+      - single-leg, classified by embedded unit or ``energy_type``.
+    """
+    if raw is None:
+        return None, None, None, None
+    text = str(raw).strip()
+    if text in _SENTINELS:
+        return None, None, None, None
+
+    if text.startswith("("):
+        close_idx = text.find(")")
+        if close_idx != -1:
+            inside = text[1:close_idx]
+            suffix = text[close_idx + 1 :].lstrip("/").strip()
+            if "+" in inside:
+                left, _, right = inside.partition("+")
+                left, right = left.strip(), right.strip()
+                ev_str = f"{left}/{suffix}" if suffix else left
+                fuel_str = f"{right}/{suffix}" if suffix else right
+                return _classify_two_legs(
+                    ev_str,
+                    fuel_str,
+                    default_ev_unit,
+                    default_fuel_unit,
+                )
+
+    if "+" in text:
+        left, _, right = text.partition("+")
+        left, right = left.strip(), right.strip()
+        # Detect inverse ordering when both halves carry units.
+        if _FUEL_UNIT_RE.search(left) and _EV_UNIT_RE.search(right):
+            return _classify_two_legs(right, left, default_ev_unit, default_fuel_unit)
+        return _classify_two_legs(left, right, default_ev_unit, default_fuel_unit)
+
+    inline_unit = _extract_unit(text)
+    if _FUEL_UNIT_RE.search(text):
+        return None, None, text, inline_unit or default_fuel_unit
+    if _EV_UNIT_RE.search(text):
+        return text, inline_unit or default_ev_unit, None, None
+    if energy_type is EnergyType.ICE:
+        return None, None, text, inline_unit or default_fuel_unit
+    return text, inline_unit or default_ev_unit, None, None
+
+
+def _legacy_leg_alias(
+    ev_value: str | None,
+    fuel_value: str | None,
+    energy_type: EnergyType,
+) -> str | None:
+    """Compute the legacy non-suffixed alias for a per-leg field.
+
+    Returns the EV-leg value when present. For :attr:`EnergyType.HYBRID`
+    where the response carries only the petrol leg (notably
+    ``nearestEnergyConsumption`` at HYBRID), falls back to the fuel value
+    so legacy consumers still see *some* data rather than ``None``.
+    Pure-ICE vehicles (:attr:`EnergyType.ICE`) deliberately do not fall
+    back — their petrol data is exposed exclusively via the ``_fuel``
+    fields.
+    """
+    if ev_value is not None:
+        return ev_value
+    if energy_type is EnergyType.HYBRID:
+        return fuel_value
+    return None
+
+
+def _split_nearest_energy_string(
+    value: Any,
+    unit: Any,
+    energy_type: EnergyType,
+) -> _LegSplit:
+    """Resolve ``nearestEnergyConsumption`` using the paired unit field.
+
+    The cloud only ever returns a single-leg numeric value here; for
+    :attr:`EnergyType.HYBRID` that leg is petrol, with the unit field as
+    the authoritative classifier (``"L/100km"`` vs ``"kWh/100km"``).
+    """
+    if value is None:
+        return None, None, None, None
+    text = str(value).strip()
+    if text in _SENTINELS:
+        return None, None, None, None
+
+    unit_text = str(unit or "").strip() if unit is not None else ""
+    if unit_text in _SENTINELS:
+        unit_text = ""
+    unit_text = _normalize_unit(unit_text) or ""
+
+    if _FUEL_UNIT_RE.search(unit_text):
+        return None, None, text, unit_text
+    if _EV_UNIT_RE.search(unit_text):
+        return text, unit_text, None, None
+    if energy_type is EnergyType.ICE:
+        return None, None, text, unit_text
+    return text, unit_text, None, None
 
 
 # ------------------------------------------------------------------
@@ -404,6 +595,52 @@ class VehicleRealtimeData(BydBaseModel):
     total_consumption_en: str | None = None
     """English-locale total consumption label (e.g. '16.6kW·h/100km')."""
 
+    # --- Hybrid leg breakouts (parsed from combined strings) ---
+    # For each combined-form field, ``_split_hybrid_legs`` populates four
+    # parallel fields: numeric per-leg value plus the per-leg unit string.
+    # The original (non-suffixed) field is also rebound to the EV-portion
+    # string of the original payload as a backwards-compat alias — the raw
+    # combined string remains accessible via ``raw``.
+    energy_consumption_ev: float | None = None
+    energy_consumption_ev_unit: str | None = None
+    energy_consumption_fuel: float | None = None
+    energy_consumption_fuel_unit: str | None = None
+
+    nearest_energy_consumption_ev: float | None = None
+    nearest_energy_consumption_ev_unit: str | None = None
+    nearest_energy_consumption_fuel: float | None = None
+    nearest_energy_consumption_fuel_unit: str | None = None
+
+    recent_50km_energy_ev: float | None = None
+    recent_50km_energy_ev_unit: str | None = None
+    recent_50km_energy_fuel: float | None = None
+    recent_50km_energy_fuel_unit: str | None = None
+
+    total_energy_ev: float | None = None
+    total_energy_ev_unit: str | None = None
+    total_energy_fuel: float | None = None
+    total_energy_fuel_unit: str | None = None
+
+    total_consumption_ev: float | None = None
+    total_consumption_ev_unit: str | None = None
+    total_consumption_fuel: float | None = None
+    total_consumption_fuel_unit: str | None = None
+
+    total_consumption_en_ev: float | None = None
+    total_consumption_en_ev_unit: str | None = None
+    total_consumption_en_fuel: float | None = None
+    total_consumption_en_fuel_unit: str | None = None
+
+    # ``nearestEnergyConsumption`` (raw): a single-number "recent consumption"
+    # summary. The cloud picks whichever metric is most informative for the
+    # vehicle type — pure-EV: avg EV (kW·h/100km); pure-ICE: avg petrol
+    # (L/100km); hybrid: eq-petrol (L/100km, ≈ avgEqOilConsumption from
+    # the getEnergyConsumption endpoint). Preserved here verbatim before the
+    # legacy ``nearest_energy_consumption`` field is rebound for backwards
+    # compat (see ``_split_hybrid_legs``).
+    eq_consumption: float | None = None
+    eq_consumption_unit: str | None = None
+
     # --- Fuel (extended) ---
     oil_pressure_system: int | None = None
     """Oil pressure warning. 0=normal."""
@@ -433,6 +670,167 @@ class VehicleRealtimeData(BydBaseModel):
     # --- Metadata ---
     timestamp: BydTimestamp = None
     """Data timestamp (parsed to UTC datetime)."""
+
+    # ------------------------------------------------------------------
+    # Hybrid leg splitting
+    # ------------------------------------------------------------------
+
+    @model_validator(mode="before")
+    @classmethod
+    def _split_hybrid_legs(cls, values: Any, info: ValidationInfo) -> Any:
+        """Populate ``_ev``/``_ev_unit``/``_fuel``/``_fuel_unit`` per-leg fields
+        and rebind the original (non-suffixed) field to its EV-leg value.
+
+        The original combined string remains accessible via ``raw``. For
+        ``nearestEnergyConsumption``/``nearestEnergyConsumptionUnit`` the
+        legacy fields alias to the EV leg, which is ``None`` for hybrids
+        whose response only carries the petrol leg (use ``..._fuel`` /
+        ``..._fuel_unit`` to read it explicitly).
+        """
+        if not isinstance(values, dict):
+            return values
+        # Stash the raw snapshot now so the rebinding below doesn't destroy
+        # the original combined strings. Parent ``_clean_byd_values`` runs
+        # after and only stashes ``raw`` if absent.
+        if "raw" not in values:
+            values["raw"] = dict(values)
+        ctx = info.context if info is not None else None
+        ctx_value = ctx.get("energy_type") if ctx else None
+        energy_type = ctx_value if isinstance(ctx_value, EnergyType) else EnergyType.EV
+
+        # (raw_key, ev_key, ev_unit_key, fuel_key, fuel_unit_key,
+        #  default_ev_unit, default_fuel_unit)
+        splits = (
+            (
+                "energyConsumption",
+                "energy_consumption_ev",
+                "energy_consumption_ev_unit",
+                "energy_consumption_fuel",
+                "energy_consumption_fuel_unit",
+                "kWh/100km",
+                "L/100km",
+            ),
+            (
+                "recent50kmEnergy",
+                "recent_50km_energy_ev",
+                "recent_50km_energy_ev_unit",
+                "recent_50km_energy_fuel",
+                "recent_50km_energy_fuel_unit",
+                "kWh/100km",
+                "L/100km",
+            ),
+            (
+                "totalEnergy",
+                "total_energy_ev",
+                "total_energy_ev_unit",
+                "total_energy_fuel",
+                "total_energy_fuel_unit",
+                "kWh/100km",
+                "L/100km",
+            ),
+            (
+                "totalConsumption",
+                "total_consumption_ev",
+                "total_consumption_ev_unit",
+                "total_consumption_fuel",
+                "total_consumption_fuel_unit",
+                "度/百公里",
+                "升/百公里",
+            ),
+            (
+                "totalConsumptionEn",
+                "total_consumption_en_ev",
+                "total_consumption_en_ev_unit",
+                "total_consumption_en_fuel",
+                "total_consumption_en_fuel_unit",
+                "kWh/100km",
+                "L/100km",
+            ),
+        )
+
+        for raw_key, ev_k, ev_u_k, fuel_k, fuel_u_k, def_ev_u, def_fuel_u in splits:
+            if raw_key not in values:
+                continue
+            ev_str, ev_u, fuel_str, fuel_u = _split_combined_string(
+                values[raw_key],
+                energy_type,
+                default_ev_unit=def_ev_u,
+                default_fuel_unit=def_fuel_u,
+            )
+            ev_n = _first_num(ev_str)
+            fuel_n = _first_num(fuel_str)
+            if ev_n is not None:
+                values.setdefault(ev_k, ev_n)
+                if ev_u:
+                    values.setdefault(ev_u_k, ev_u)
+            if fuel_n is not None:
+                values.setdefault(fuel_k, fuel_n)
+                if fuel_u:
+                    values.setdefault(fuel_u_k, fuel_u)
+            # Backwards-compat: rebind the original (str) field to the
+            # EV-portion. For HYBRID where the cloud returns only the
+            # petrol leg, fall back to the fuel value so legacy consumers
+            # don't suddenly see ``None``.
+            values[raw_key] = _legacy_leg_alias(ev_str, fuel_str, energy_type)
+
+        if "nearestEnergyConsumption" in values:
+            # Capture the raw single-number "recent consumption" summary
+            # before the rebinding below overwrites the legacy field.
+            raw_eq = _first_num(str(values.get("nearestEnergyConsumption") or ""))
+            if raw_eq is not None:
+                values.setdefault("eq_consumption", raw_eq)
+                raw_eq_unit = values.get("nearestEnergyConsumptionUnit")
+                if raw_eq_unit:
+                    values.setdefault(
+                        "eq_consumption_unit",
+                        _normalize_unit(str(raw_eq_unit)),
+                    )
+            ev_str, ev_u, fuel_str, fuel_u = _split_nearest_energy_string(
+                values.get("nearestEnergyConsumption"),
+                values.get("nearestEnergyConsumptionUnit"),
+                energy_type,
+            )
+            # At HYBRID the cloud repurposes nearestEnergyConsumption to
+            # carry the equivalent-petrol consumption (≈ avgEqOilConsumption
+            # in getEnergyConsumption) — *not* the per-leg averages. The
+            # actual nearest EV/fuel averages are packed into energyConsumption
+            # (already split into energy_consumption_ev / _fuel above), so
+            # surface those here. The eq-petrol value remains in raw.
+            if energy_type is EnergyType.HYBRID:
+                ec_ev = values.get("energy_consumption_ev")
+                ec_fuel = values.get("energy_consumption_fuel")
+                ec_ev_u = values.get("energy_consumption_ev_unit")
+                ec_fuel_u = values.get("energy_consumption_fuel_unit")
+                if ec_ev is not None:
+                    ev_str = str(ec_ev)
+                    ev_u = ec_ev_u or "kWh/100km"
+                if ec_fuel is not None:
+                    fuel_str = str(ec_fuel)
+                    fuel_u = ec_fuel_u or "L/100km"
+            ev_n = _first_num(ev_str)
+            fuel_n = _first_num(fuel_str)
+            if ev_n is not None:
+                values.setdefault("nearest_energy_consumption_ev", ev_n)
+                if ev_u:
+                    values.setdefault("nearest_energy_consumption_ev_unit", ev_u)
+            if fuel_n is not None:
+                values.setdefault("nearest_energy_consumption_fuel", fuel_n)
+                if fuel_u:
+                    values.setdefault("nearest_energy_consumption_fuel_unit", fuel_u)
+            # Backwards-compat: legacy value/unit fields alias the EV leg,
+            # falling back to the fuel leg for hybrids that carry only petrol.
+            values["nearestEnergyConsumption"] = _legacy_leg_alias(
+                ev_str,
+                fuel_str,
+                energy_type,
+            )
+            values["nearestEnergyConsumptionUnit"] = _legacy_leg_alias(
+                ev_u,
+                fuel_u,
+                energy_type,
+            )
+
+        return values
 
     # ------------------------------------------------------------------
     # Static helpers
