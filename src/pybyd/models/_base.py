@@ -56,15 +56,37 @@ _MS_THRESHOLD = 1_000_000_000_000
 
 
 def parse_byd_timestamp(value: Any) -> datetime | None:
-    """Convert a BYD epoch timestamp (seconds **or** milliseconds) to a UTC datetime.
+    """Convert a BYD timestamp to a UTC datetime.
 
-    Returns ``None`` when the value is ``None`` or not numeric.
+    Accepts:
+
+    * ``int`` / numeric string — epoch seconds *or* milliseconds (auto-detected)
+    * ISO-8601 string — e.g. ``"2026-05-07T05:56:45.000+00:00"`` from the
+      ``smartChargeDto`` schedule blocks
+
+    Returns ``None`` when the value is ``None`` or unparseable.
     """
     if value is None:
         return value
     if isinstance(value, datetime):
         return value
-    ts = int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if not text.lstrip("-").isdigit():
+            try:
+                # ``Z`` suffix isn't accepted by fromisoformat until 3.11.
+                normalised = text.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(normalised)
+            except ValueError:
+                return None
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+        value = text
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return None
     if ts >= _MS_THRESHOLD:
         ts = ts // 1000
     return datetime.fromtimestamp(ts, tz=UTC)

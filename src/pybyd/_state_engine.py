@@ -31,6 +31,7 @@ from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus
 from pybyd.models.realtime import VehicleRealtimeData
+from pybyd.models.smart_charging import SmartChargingSchedule
 from pybyd.models.vehicle import Vehicle
 
 _logger = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ class VehicleSnapshot:
     gps: GpsInfo | None = None
     charging: ChargingStatus | None = None
     energy: EnergyConsumption | None = None
+    charging_schedule: SmartChargingSchedule | None = None
 
 
 # ------------------------------------------------------------------
@@ -75,7 +77,8 @@ class ProjectionSpec:
     """
 
     section: str
-    """State section: ``"realtime"``, ``"hvac"``, ``"gps"``, ``"charging"``, ``"energy"``."""
+    """State section: ``"realtime"``, ``"hvac"``, ``"gps"``, ``"charging"``,
+    ``"energy"``, ``"charging_schedule"``."""
 
     field_name: str
     """Field name within the section model (e.g. ``"left_front_door_lock"``)."""
@@ -141,6 +144,7 @@ class VehicleStateEngine:
         self._base_gps: GpsInfo | None = None
         self._base_charging: ChargingStatus | None = None
         self._base_energy: EnergyConsumption | None = None
+        self._base_charging_schedule: SmartChargingSchedule | None = None
 
         # Active projections
         self._projections: list[FieldProjection] = []
@@ -253,6 +257,13 @@ class VehicleStateEngine:
             self._reconcile_projections("energy", data)
             self._rebuild_snapshot()
 
+    async def update_charging_schedule(self, data: SmartChargingSchedule) -> None:
+        """Merge incoming smart-charging schedule data."""
+        async with self._lock:
+            self._base_charging_schedule = data
+            self._reconcile_projections("charging_schedule", data)
+            self._rebuild_snapshot()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -357,6 +368,16 @@ class VehicleStateEngine:
             return base
         return base.model_copy(update=updates)
 
+    def _project_charging_schedule(self) -> SmartChargingSchedule | None:
+        """Build projected charging-schedule data (base + projection overlay)."""
+        base = self._base_charging_schedule
+        if base is None:
+            return None
+        updates = self._get_projection_updates("charging_schedule")
+        if not updates:
+            return base
+        return base.model_copy(update=updates)
+
     def _rebuild_snapshot(self) -> None:
         """Rebuild projected snapshot from base state + active projections."""
         # Clean expired projections
@@ -369,6 +390,7 @@ class VehicleStateEngine:
             gps=self._project_gps(),
             charging=self._project_charging(),
             energy=self._project_energy(),
+            charging_schedule=self._project_charging_schedule(),
         )
         self._snapshot = new_snapshot
 

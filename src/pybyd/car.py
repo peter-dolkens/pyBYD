@@ -210,10 +210,19 @@ class BydCar:
         return data
 
     async def update_charging(self) -> ChargingStatus:
-        """Fetch fresh charging data and merge into state engine."""
-        data = await self._client.get_charging_status(self._vin)
-        await self._engine.update_charging(data)
-        return data
+        """Fetch fresh charging data + schedule and merge both into state engine.
+
+        The cloud returns both views from one ``homePage`` call, so a
+        force-refresh updates every charging-related field — live state
+        AND the configured schedule — in a single round-trip.  MQTT
+        pushes (which only carry live state) continue to flow through
+        :meth:`handle_mqtt_charging` and never touch the schedule
+        section, so a partial-state push can't clobber the schedule.
+        """
+        status, schedule = await self._client.get_charging_homepage(self._vin)
+        await self._engine.update_charging(status)
+        await self._engine.update_charging_schedule(schedule)
+        return status
 
     async def start_charging(self) -> ChargeChangeResult:
         """Start charging immediately and wait for the toggle to settle.
@@ -232,6 +241,34 @@ class BydCar:
         data = await self._client.get_energy_consumption(self._vin)
         await self._engine.update_energy(data)
         return data
+
+    async def save_charging_schedule(
+        self,
+        *,
+        start_charge_time: str,
+        end_charge_time: str,
+        charge_way: str,
+        enabled: bool = True,
+    ) -> ChargeChangeResult:
+        """Push a new smart-charging schedule and refresh the snapshot.
+
+        Routes through :meth:`BydClient.save_charging_schedule` which
+        triggers ``saveOrUpdate`` and waits for ``changeResult`` to
+        report a terminal state (``res == 2`` success, anything else
+        raises).  Once the cloud has confirmed the new schedule,
+        refreshes the snapshot via :meth:`update_charging` so both
+        the live charging section and the schedule section reflect
+        the post-save state.
+        """
+        result = await self._client.save_charging_schedule(
+            self._vin,
+            start_charge_time=start_charge_time,
+            end_charge_time=end_charge_time,
+            charge_way=charge_way,
+            enabled=enabled,
+        )
+        await self.update_charging()
+        return result
 
     # ------------------------------------------------------------------
     # MQTT integration
