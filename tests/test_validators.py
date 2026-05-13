@@ -11,7 +11,7 @@ from pybyd._validators import (
     guard_gps_coordinates,
 )
 from pybyd.models.gps import GpsInfo
-from pybyd.models.realtime import LockState, VehicleRealtimeData
+from pybyd.models.realtime import LockState, TirePressureUnit, VehicleRealtimeData
 from pybyd.models.vehicle import EnergyType
 
 # ---------------------------------------------------------------------------
@@ -383,6 +383,108 @@ class TestApplyRealtimePreserveWhenNone:
         filtered = apply_realtime_filters(previous, incoming)
 
         assert getattr(filtered, field_name) == incoming_value
+
+
+class TestApplyRealtimeTirePressUnitGuard:
+    """``tire_press_unit`` is preserved when all four pressures read zero.
+
+    The HTTP /vehicleRealTimeResult endpoint returns ``tirePressUnit: 3``
+    (kPa default) with all pressures set to ``0`` even on vehicles
+    configured for PSI. Without this guard the unit flips PSI → kPa
+    while the numeric pressures stay PSI-scale, so HA's unit conversion
+    divides every reading by ~6.89 until the next MQTT push restores
+    the real unit.
+    """
+
+    def test_zero_pressures_preserve_previous_unit(self) -> None:
+        previous = VehicleRealtimeData.model_validate(
+            {
+                "tirePressUnit": int(TirePressureUnit.PSI),
+                "leftFrontTirepressure": 38.4,
+                "rightFrontTirepressure": 37.2,
+                "leftRearTirepressure": 37.9,
+                "rightRearTirepressure": 37.7,
+            }
+        )
+        incoming = VehicleRealtimeData.model_validate(
+            {
+                "tirePressUnit": int(TirePressureUnit.KPA),
+                "leftFrontTirepressure": 0,
+                "rightFrontTirepressure": 0,
+                "leftRearTirepressure": 0,
+                "rightRearTirepressure": 0,
+            }
+        )
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert filtered.tire_press_unit == TirePressureUnit.PSI
+
+    def test_nonzero_pressures_accept_incoming_unit(self) -> None:
+        previous = VehicleRealtimeData.model_validate(
+            {
+                "tirePressUnit": int(TirePressureUnit.PSI),
+                "leftFrontTirepressure": 38.4,
+                "rightFrontTirepressure": 37.2,
+                "leftRearTirepressure": 37.9,
+                "rightRearTirepressure": 37.7,
+            }
+        )
+        incoming = VehicleRealtimeData.model_validate(
+            {
+                "tirePressUnit": int(TirePressureUnit.KPA),
+                "leftFrontTirepressure": 250.0,
+                "rightFrontTirepressure": 245.0,
+                "leftRearTirepressure": 252.0,
+                "rightRearTirepressure": 248.0,
+            }
+        )
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert filtered.tire_press_unit == TirePressureUnit.KPA
+
+    def test_zero_pressures_first_poll_drops_unit(self) -> None:
+        # Without a previous value the guard falls back to None (matches
+        # the rest of the zero-drop family on first poll: the all-zero
+        # HTTP placeholder is rejected wholesale, including its default
+        # unit).
+        incoming = VehicleRealtimeData.model_validate(
+            {
+                "tirePressUnit": int(TirePressureUnit.KPA),
+                "leftFrontTirepressure": 0,
+                "rightFrontTirepressure": 0,
+                "leftRearTirepressure": 0,
+                "rightRearTirepressure": 0,
+            }
+        )
+
+        filtered = apply_realtime_filters(None, incoming)
+
+        assert filtered.tire_press_unit is None
+
+    def test_partial_pressures_accept_incoming_unit(self) -> None:
+        # If even one tire pressure carries a real reading the incoming
+        # unit is considered trustworthy and replaces the previous.
+        previous = VehicleRealtimeData.model_validate(
+            {
+                "tirePressUnit": int(TirePressureUnit.PSI),
+                "leftFrontTirepressure": 38.4,
+            }
+        )
+        incoming = VehicleRealtimeData.model_validate(
+            {
+                "tirePressUnit": int(TirePressureUnit.KPA),
+                "leftFrontTirepressure": 260.0,
+                "rightFrontTirepressure": 0,
+                "leftRearTirepressure": 0,
+                "rightRearTirepressure": 0,
+            }
+        )
+
+        filtered = apply_realtime_filters(previous, incoming)
+
+        assert filtered.tire_press_unit == TirePressureUnit.KPA
 
 
 # ---------------------------------------------------------------------------

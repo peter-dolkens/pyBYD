@@ -200,6 +200,39 @@ def _apply_model_field_filters(
     return updates
 
 
+_TIRE_PRESSURE_FIELDS: tuple[str, ...] = (
+    "left_front_tire_pressure",
+    "right_front_tire_pressure",
+    "left_rear_tire_pressure",
+    "right_rear_tire_pressure",
+)
+
+
+def _guard_tire_press_unit(
+    previous: VehicleRealtimeData,
+    incoming: VehicleRealtimeData,
+) -> Any | object:
+    """Drop incoming ``tire_press_unit`` when all four pressures are zero.
+
+    The HTTP /vehicleRealTimeResult endpoint returns the realtime block
+    with ``tirePressUnit: 3`` (kPa, the default) and every tire pressure
+    set to ``0`` even when the vehicle is configured for PSI. The tire
+    pressure zero-drop filters already preserve the previous numeric
+    values, but the unit field has no such guard — so the unit flips
+    PSI → kPa while the numeric values stay PSI-scale, and any HA
+    consumer doing unit conversion ends up displaying ``pressure /
+    6.89476`` until the next MQTT push restores the real unit.
+
+    Returns the previous unit when every pressure on *incoming* reads
+    ``0`` / ``None``, or :data:`_MISSING` to leave the incoming value
+    unchanged.
+    """
+    pressures = [getattr(incoming, f, None) for f in _TIRE_PRESSURE_FIELDS]
+    if all(p is None or p == 0 for p in pressures):
+        return getattr(previous, "tire_press_unit", _MISSING)
+    return _MISSING
+
+
 def apply_realtime_filters(
     previous: VehicleRealtimeData | None,
     incoming: VehicleRealtimeData,
@@ -208,6 +241,8 @@ def apply_realtime_filters(
 
     Rules currently include:
     - selected realtime zero-drop gating (doors/locks, SOC/range/tire pressure/odometer).
+    - cross-field guard preserving ``tire_press_unit`` when all four
+      tire pressures on the incoming payload read zero.
 
     The returned model is either:
     - the original incoming payload when no override is needed, or
@@ -215,6 +250,9 @@ def apply_realtime_filters(
     """
     baseline = previous if previous is not None else VehicleRealtimeData.model_validate({})
     updates = _apply_model_field_filters(baseline, incoming, _REALTIME_FIELD_FILTERS)
+    tire_unit_override = _guard_tire_press_unit(baseline, incoming)
+    if tire_unit_override is not _MISSING:
+        updates["tire_press_unit"] = tire_unit_override
     if updates:
         return incoming.model_copy(update=updates)
     return incoming
