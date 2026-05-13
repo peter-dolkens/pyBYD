@@ -184,6 +184,7 @@ class TestApplyRealtimeZeroDropGating:
             ("total_mileage", 18234.0),
             ("total_mileage_v2", 18234.0),
             ("oil_endurance", 420.0),
+            ("oil_percent", 74.0),
         ],
     )
     def test_zero_incoming_with_previous_keeps_previous(self, field_name: str, previous_value: float) -> None:
@@ -208,6 +209,7 @@ class TestApplyRealtimeZeroDropGating:
             "total_mileage",
             "total_mileage_v2",
             "oil_endurance",
+            "oil_percent",
         ],
     )
     def test_zero_incoming_without_previous_dropped(self, field_name: str) -> None:
@@ -231,6 +233,7 @@ class TestApplyRealtimeZeroDropGating:
             ("total_mileage", 18234.0, 18240.0),
             ("total_mileage_v2", 18234.0, 18240.0),
             ("oil_endurance", 420.0, 410.0),
+            ("oil_percent", 74.0, 72.0),
         ],
     )
     def test_nonzero_incoming_replaces_previous(

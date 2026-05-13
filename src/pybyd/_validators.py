@@ -69,6 +69,7 @@ _ZERO_DROP_FIELD_NAMES: tuple[str, ...] = (
     "total_mileage",
     "total_mileage_v2",
     "oil_endurance",
+    "oil_percent",
 )
 
 # Energy consumption fields where the HTTP /getEnergyConsumption endpoint
